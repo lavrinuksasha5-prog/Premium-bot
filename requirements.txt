@@ -1,8 +1,5 @@
 aiogram
 aiohttp
-tdata-reader
 telethon
-cryptg
 python-socks[asyncio]
-python-multipart
 requests
