@@ -6,6 +6,7 @@ import random
 import shutil
 import requests
 import time
+import re
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
@@ -48,51 +49,64 @@ def load_json(file_path, default):
 def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- ФОРМАТИРОВАНИЕ ПРОКСИ ---
+# --- УНИВЕРСАЛЬНЫЙ ПАРСЕР ПРОКСИ ---
 def format_proxy_url(proxy_str):
     p_str = proxy_str.strip()
+    # Если уже есть схема
     if "://" in p_str:
         return p_str
+    
+    # Формат login:pass@host:port
+    if "@" in p_str:
+        return f"socks5://{p_str}"
+        
+    # Формат host:port:login:pass
     parts = p_str.split(':')
     if len(parts) == 4:
         host, port, login, password = parts
         return f"socks5://{login}:{password}@{host}:{port}"
+        
     return f"socks5://{p_str}"
 
 def check_proxy(proxy_str):
     p_url = format_proxy_url(proxy_str)
     parsed = urlparse(p_url)
+    
     host = parsed.hostname
     port = parsed.port
     login = parsed.username
     password = parsed.password
     
+    country = "UNKNOWN"
+    if login:
+        match = re.search(r'country-([A-Z]{2})', login)
+        if match: country = match.group(1)
+
     start_time = time.time()
     try:
-        # Проверяем подключение к Telegram (149.154.167.51:443)
         proxy = Proxy.create(
             proxy_type=ProxyType.SOCKS5 if parsed.scheme == 'socks5' else ProxyType.HTTP,
             host=host, port=port, username=login, password=password
         )
+        # Проверяем на подключение к серверу Telegram (DC2)
         conn = proxy.connect(dest_host='149.154.167.51', dest_port=443, timeout=5)
         conn.close()
         ping_ms = int((time.time() - start_time) * 1000)
         
-        # Узнаем страну
-        country = "UNKNOWN"
-        try:
-            r = requests.get("http://ip-api.com/json/?fields=status,countryCode", 
-                             proxies={'http': p_url, 'https': p_url}, timeout=3)
-            if r.status_code == 200 and r.json().get("status") == "success":
-                country = r.json().get("countryCode")
-        except: pass
+        if country == "UNKNOWN":
+            try:
+                r = requests.get("http://ip-api.com/json/?fields=status,countryCode", 
+                                 proxies={'http': p_url, 'https': p_url}, timeout=3)
+                if r.status_code == 200 and r.json().get("status") == "success":
+                    country = r.json().get("countryCode")
+            except: pass
             
         return True, country, ping_ms
     except Exception as e:
-        print(f"Прокси не прошел проверку: {e}")
+        print(f"Прокси {p_url} не работает: {e}")
         return False, "UNKNOWN", 0
 
-# --- ДАННЫЕ СТРАН ---
+# --- СЛОВАРИ ---
 COUNTRY_NAMES = {
     "RU": "Россия", "UA": "Украина", "IT": "Италия", "DE": "Германия", 
     "FR": "Франция", "US": "США", "GB": "Великобритания", "ES": "Испания",
@@ -111,6 +125,7 @@ def format_phone(phone_str):
     else:
         return f"+{digits}"
 
+# --- УСТРОЙСТВА ---
 IPHONE_MODELS = ["iPhone 14 Pro", "iPhone 13", "iPhone 12", "iPhone 15"]
 ANDROID_MODELS = ["Samsung Galaxy S23", "Xiaomi 13 Pro", "Google Pixel 7"]
 MAC_MODELS = ["MacBook Pro M2", "MacBook Air M1"]
@@ -153,7 +168,6 @@ async def handle_update_proxy(request):
         acc_id = data.get("account_id")
         new_proxy = data.get("new_proxy")
         
-        # Проверяем новый прокси
         is_alive, country, ping = check_proxy(new_proxy)
         if not is_alive:
             return web.json_response({"status": "error", "message": "Прокси не работает"}, status=400)
@@ -167,14 +181,8 @@ async def handle_update_proxy(request):
             acc["proxy_country"] = COUNTRY_NAMES.get(country, "Неизвестно")
             acc["proxy_flag"] = FLAGS.get(country, "🏳️")
             acc["speed"] = ping
-            
             save_json(ACCOUNTS_FILE, accounts)
-            return web.json_response({
-                "status": "ok",
-                "proxy_country": acc["proxy_country"],
-                "proxy_flag": acc["proxy_flag"],
-                "speed": ping
-            })
+            return web.json_response({"status": "ok", "proxy_country": acc["proxy_country"], "proxy_flag": acc["proxy_flag"], "speed": ping})
         return web.json_response({"status": "error", "message": "Аккаунт не найден"}, status=404)
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
@@ -218,17 +226,15 @@ async def process_proxies(message: Message):
     if user_states.get(message.from_user.id) != "waiting_proxies": return
     user_states[message.from_user.id] = None
     
-    status_msg = await message.answer("⏳ Проверяю прокси и подключаюсь...")
+    status_msg = await message.answer("⏳ Проверяю прокси и подключаюсь к аккаунтам. Жди...")
     
     raw_proxies = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
-    
     valid_proxies = []
+    
     for p in raw_proxies:
         is_alive, country, ping = check_proxy(p)
         if is_alive:
             valid_proxies.append({"raw": format_proxy_url(p), "country": country, "speed": ping})
-        else:
-            print(f"Прокси {p} отброшен (мертв)")
 
     if not valid_proxies:
         return await status_msg.edit_text("❌ Все прокси оказались нерабочими.")
@@ -268,6 +274,9 @@ async def process_proxies(message: Message):
             premium = False
             premium_expires = "Нет"
             status = "❌ Ошибка"
+            
+            # Уникальный пинг для каждого аккаунта
+            unique_speed = best_proxy["speed"] + random.randint(1, 15)
 
             try:
                 acc = read_tdata(root)
@@ -289,7 +298,7 @@ async def process_proxies(message: Message):
                 
                 if await client.is_user_authorized():
                     me = await client.get_me()
-                    username = me.username or me.first_name or f"Без имени"
+                    username = me.username or f"{me.first_name or ''} {me.last_name or ''}".strip() or f"Без имени"
                     
                     full_user = await client(GetFullUserRequest(me.id))
                     if full_user.full_user.premium_expires:
@@ -301,7 +310,7 @@ async def process_proxies(message: Message):
                 await client.disconnect()
             except Exception as e:
                 print(f"Ошибка аккаунта {phone}: {e}")
-                status = f"❌ {str(e)[:20]}"
+                status = f"❌ Ошибка"
 
             country_name = COUNTRY_NAMES.get(acc_country, "Неизвестно")
             flag = FLAGS.get(acc_country, "🏳️")
@@ -317,7 +326,7 @@ async def process_proxies(message: Message):
                 "flag": flag,
                 "proxy_country": proxy_country_name,
                 "proxy_flag": proxy_flag,
-                "speed": best_proxy["speed"],
+                "speed": unique_speed,
                 "premium": premium, 
                 "premium_expires": premium_expires, 
                 "device": f"{device['model']} ({device['system']})", 
