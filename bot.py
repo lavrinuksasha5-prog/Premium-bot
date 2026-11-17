@@ -53,51 +53,21 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
-# --- БОЛЬШОЙ СПИСОК СТРАН ---
 COUNTRY_NAMES = {
     "RU": "Россия", "UA": "Украина", "IT": "Италия", "DE": "Германия", 
     "FR": "Франция", "US": "США", "GB": "Великобритания", "ES": "Испания",
-    "PL": "Польша", "TR": "Турция", "KZ": "Казахстан", "BY": "Беларусь",
-    "NL": "Нидерланды", "SE": "Швеция", "NO": "Норвегия", "FI": "Финляндия",
-    "DK": "Дания", "CH": "Швейцария", "AT": "Австрия", "BE": "Бельгия",
-    "PT": "Португалия", "GR": "Греция", "CZ": "Чехия", "RO": "Румыния",
-    "BG": "Болгария", "HU": "Венгрия", "CA": "Канада", "AU": "Австралия",
-    "CN": "Китай", "JP": "Япония", "KR": "Корея", "IN": "Индия", "BR": "Бразилия",
-    "UNKNOWN": "Неизвестно"
+    "PL": "Польша", "TR": "Турция", "KZ": "Казахстан", "UNKNOWN": "Неизвестно"
 }
 
-FLAGS = {
-    "RU": "🇷🇺", "UA": "🇺🇦", "IT": "🇮🇹", "DE": "🇩🇪", "FR": "🇫🇷", "US": "🇺🇸",
-    "GB": "🇬🇧", "ES": "🇪🇸", "PL": "🇵🇱", "TR": "🇹🇷", "KZ": "🇰🇿", "BY": "🇧🇾",
-    "NL": "🇳🇱", "SE": "🇸🇪", "NO": "🇳🇴", "FI": "🇫🇮", "DK": "🇩🇰", "CH": "🇨🇭",
-    "AT": "🇦🇹", "BE": "🇧🇪", "PT": "🇵🇹", "GR": "🇬🇷", "CZ": "🇨🇿", "RO": "🇷🇴",
-    "BG": "🇧🇬", "HU": "🇭🇺", "CA": "🇨🇦", "AU": "🇦🇺", "CN": "🇨🇳", "JP": "🇯🇵",
-    "KR": "🇰🇷", "IN": "🇮🇳", "BR": "🇧🇷", "UNKNOWN": "🏳️"
-}
+FLAGS = {"RU": "🇷🇺", "UA": "🇺🇦", "IT": "🇮🇹", "DE": "🇩🇪", "FR": "🇫🇷", "US": "🇺🇸", "GB": "🇬🇧", "ES": "🇪🇸", "PL": "🇵🇱", "TR": "🇹🇷", "KZ": "🇰🇿", "UNKNOWN": "🏳️"}
 
-def get_country_by_phone(phone):
-    phone = ''.join(filter(str.isdigit, phone))
-    if phone.startswith("380"): return "UA"
-    if phone.startswith("7"): return "RU"
-    if phone.startswith("39"): return "IT"
-    if phone.startswith("49"): return "DE"
-    if phone.startswith("33"): return "FR"
-    if phone.startswith("90"): return "TR"
-    if phone.startswith("375"): return "BY"
-    if phone.startswith("48"): return "PL"
-    return "UNKNOWN"
-
-# Убрали эти сраные скобочки, теперь просто пробелы
 def format_phone(phone_str):
     digits = ''.join(filter(str.isdigit, phone_str))
     if not digits: return phone_str
-    if digits.startswith("0"): digits = digits[1:]
     if len(digits) >= 11:
         return f"+{digits[0]} {digits[1:4]} {digits[4:7]}-{digits[7:9]}-{digits[9:11]}"
     elif len(digits) >= 10:
         return f"+{digits[0:2]} {digits[2:5]} {digits[5:8]} {digits[8:10]}"
-    elif len(digits) > 5:
-        return f"+{digits[0]} {digits[1:]}"
     else:
         return f"+{digits}"
 
@@ -200,7 +170,7 @@ async def process_proxies(message: Message):
     if user_states.get(message.from_user.id) != "waiting_proxies": return
     user_states[message.from_user.id] = None
     
-    status_msg = await message.answer("⏳ Подключаюсь к аккаунтам через TData. Жди...")
+    status_msg = await message.answer("⏳ Подключаюсь к аккаунтам. Жди...")
     
     proxies = []
     for line in message.text.strip().split('\n'):
@@ -227,27 +197,41 @@ async def process_proxies(message: Message):
 
             if phone in processed_ids: continue
             
-            acc_country = get_country_by_phone(phone)
+            acc_country = "UNKNOWN"
+            if phone.isdigit():
+                if phone.startswith("90"): acc_country = "TR"
+                elif phone.startswith("380"): acc_country = "UA"
+                elif phone.startswith("39"): acc_country = "IT"
+                elif phone.startswith("49"): acc_country = "DE"
+            
+            if acc_country == "UNKNOWN" and proxies:
+                acc_country = proxies[0]["country"]
+
             best_proxy = proxies[0] if proxies else {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
             matching = [p for p in proxies if p["country"] == acc_country]
             if matching: best_proxy = matching[0]
 
-            # --- РЕАЛЬНОЕ ПОДКЛЮЧЕНИЕ ---
-            username = f"Аккаунт {format_phone(phone)}" # По умолчанию
+            # Данные по умолчанию
+            username = f"Аккаунт {format_phone(phone)}"
             premium = False
             premium_expires = "Нет"
-            
+            status = "❌ Ошибка подключения"
+
             if best_proxy["raw"] != "Нет":
                 try:
+                    # Читаем TData
                     acc = read_tdata(root)
                     session_string = acc.to_string_session()
                     
+                    # Настраиваем прокси
                     parsed = urlparse(best_proxy["raw"])
                     p_type = ProxyType.SOCKS5 if parsed.scheme == 'socks5' else ProxyType.SOCKS4 if parsed.scheme == 'socks4' else ProxyType.HTTP
                     proxy_tuple = (p_type, parsed.hostname, parsed.port, True, parsed.username, parsed.password)
                     
+                    # Устройство
                     device = get_sticky_device(phone)
                     
+                    # Подключаемся
                     client = TelegramClient(
                         StringSession(session_string), acc.api_id, acc.api_hash, 
                         device_model=device['model'], system_version=device['system'], 
@@ -258,16 +242,21 @@ async def process_proxies(message: Message):
                     
                     if await client.is_user_authorized():
                         me = await client.get_me()
-                        username = me.username or me.first_name or f"Аккаунт {format_phone(phone)}"
+                        # Если есть юзернейм — берем его, иначе имя
+                        username = me.username or me.first_name or f"Без имени"
                         
+                        # Проверяем премиум
                         full_user = await client(GetFullUserRequest(me.id))
                         if full_user.full_user.premium_expires:
                             premium = True
                             premium_expires = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
+                        
+                        status = "✅ Подключен"
                     
                     await client.disconnect()
                 except Exception as e:
-                    print(f"Ошибка подключения {phone}: {e}")
+                    print(f"Ошибка аккаунта {phone}: {e}")
+                    status = f"❌ {str(e)[:20]}"
 
             country_name = COUNTRY_NAMES.get(acc_country, "Неизвестно")
             flag = FLAGS.get(acc_country, "🏳️")
@@ -279,7 +268,6 @@ async def process_proxies(message: Message):
             found_accounts.append({
                 "id": phone, 
                 "username": username, 
-                "first_name": "", 
                 "phone": format_phone(phone), 
                 "account_country": country_name, 
                 "flag": flag,
@@ -290,7 +278,8 @@ async def process_proxies(message: Message):
                 "premium": premium, 
                 "premium_expires": premium_expires, 
                 "device": f"{device['model']} ({device['system']})", 
-                "proxy": best_proxy["raw"]
+                "proxy": best_proxy["raw"],
+                "status": status
             })
             processed_ids.add(phone)
 
