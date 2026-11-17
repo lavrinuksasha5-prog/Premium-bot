@@ -107,24 +107,24 @@ async def handle_get_premium_link(request):
 
 # --- BOT HANDLERS ---
 @dp.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext):
-    await state.clear() # Сбрасываем старые состояния
+async def cmd_start(message: Message):
+    # Просто показываем кнопку. Никаких состояний тут не ставим.
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚀 Начать работу")]], resize_keyboard=True)
     await message.answer("Нажми на кнопку ниже 👇", reply_markup=kb)
 
 @dp.message(F.text == "🚀 Начать работу")
 async def start_work_btn(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Скинь ZIP-архив с папками TData.", reply_markup=ReplyKeyboardRemove())
+    # Переводим в состояние ожидания архива
     await state.set_state(UploadStates.waiting_zip)
+    await message.answer("Скинь ZIP-архив с папками TData.", reply_markup=ReplyKeyboardRemove())
 
 @dp.message(UploadStates.waiting_zip, F.document)
 async def process_zip(message: Message, state: FSMContext):
     if not message.document.file_name.endswith('.zip'): 
         return await message.answer("Это не ZIP файл.")
     
-    # Убираем состояние ожидания ZIP, чтобы не срабатывало дважды
-    await state.clear() 
+    # Переводим в ожидание прокси ДО скачивания, чтобы избежать дублей
+    await state.set_state(UploadStates.waiting_proxies)
     msg = await message.answer("⏳ Скачиваю архив...")
     
     await bot.download(message.document, destination=TEMP_ZIP)
@@ -133,13 +133,13 @@ async def process_zip(message: Message, state: FSMContext):
     try:
         with zipfile.ZipFile(TEMP_ZIP) as z: z.extractall(TDATA_DIR)
         await msg.edit_text("✅ Архив распакован. Теперь скинь список прокси текстом.")
-        await state.set_state(UploadStates.waiting_proxies)
     except Exception as e: 
         await msg.edit_text(f"❌ Ошибка распаковки: {e}")
 
 @dp.message(UploadStates.waiting_proxies, F.text)
 async def process_proxies(message: Message, state: FSMContext):
-    await state.clear() # СРАЗУ сбрасываем, чтобы сообщение не дублировалось
+    # Переводим в состояние загрузки (пустое), чтобы больше не ловить текст
+    await state.set_state(None)
     msg = await message.answer("⏳ Начинаю обработку. Буду делать паузы. Жди...")
     
     try:
