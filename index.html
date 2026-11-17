@@ -16,7 +16,7 @@
         .acc-name { font-weight: 700; font-size: 14px; }
         .acc-phone { font-size: 12px; color: var(--hint); }
         
-        .row-mid { display: flex; justify-content: space-between; font-size: 11px; color: var(--hint); background: rgba(255,255,255,0.03); padding: 6px; border-radius: 6px; }
+        .info-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--hint); padding: 2px 0; }
         
         .actions { display: flex; gap: 6px; margin-top: 4px; }
         .btn-action { flex: 1; padding: 8px; border: none; border-radius: 8px; font-weight: 700; font-size: 12px; cursor: pointer; text-align: center; }
@@ -51,11 +51,6 @@
                     const premText = acc.premium ? `Premium до ${acc.premium_expires}` : 'Нет Premium';
                     const premClass = acc.premium ? 'prem-yes' : 'prem-no';
                     
-                    // Флаги
-                    const flags = { "IT": "🇮🇹", "DE": "🇩🇪", "UA": "🇺🇦", "RU": "🇷🇺", "US": "🇺🇸", "UNKNOWN": "🏳️" };
-                    const accFlag = flags[acc.account_country] || "🏳️";
-                    const proxyFlag = flags[acc.proxy_country] || "🏳️";
-                    
                     return `
                     <div class="card">
                         <div class="row-top">
@@ -65,11 +60,22 @@
                             </div>
                             <div class="${premClass}" style="font-size:11px;">${premText}</div>
                         </div>
-                        <div class="row-mid">
-                            <span>${accFlag} ${acc.account_country} ${proxyFlag}</span>
-                            <span>⚡ ${acc.speed || '0'} ms</span>
-                            <span>📱 ${acc.device || 'N/A'}</span>
+                        
+                        <div style="display: flex; flex-direction: column; gap: 4px; font-size: 11px; margin-top: 4px;">
+                            <div class="info-row">
+                                <span>📱 Аккаунт:</span>
+                                <span>${acc.flag || '🏳️'} ${acc.account_country || 'Неизвестно'}</span>
+                            </div>
+                            <div class="info-row">
+                                <span>🌍 Прокси:</span>
+                                <span>${acc.proxy_flag || '🏳️'} ${acc.proxy_country || 'Неизвестно'} (⚡${acc.speed} ms)</span>
+                            </div>
+                            <div class="info-row">
+                                <span>📱 Устройство:</span>
+                                <span>${acc.device || 'N/A'}</span>
+                            </div>
                         </div>
+
                         <div class="actions">
                             <button class="btn-action btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить</button>
                             <button class="btn-action btn-open" onclick="openBot('${acc.username}')">📱 Открыть</button>
@@ -94,7 +100,6 @@
         }
 
         function openBot(username) {
-            // Открываем профиль в веб-версии
             const link = `https://t.me/${username}`;
             tg.openLink(link);
         }
