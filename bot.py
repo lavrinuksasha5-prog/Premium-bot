@@ -10,7 +10,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import Message, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -85,7 +85,6 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
-# --- Рекурсивный поиск папок с tdata (чтобы не падало из-за структуры ZIP) ---
 def find_tdata_folders(base_path):
     folders = []
     for root, dirs, files in os.walk(base_path):
@@ -93,6 +92,127 @@ def find_tdata_folders(base_path):
             folders.append(root)
     return folders
 
+# --- API ДЛЯ ВЕБ-ПАНЕЛИ ---
+@web.middleware
+async def cors_middleware(request, handler):
+    if request.method == 'OPTIONS':
+        return web.Response(status=200, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type"})
+    response = await handler(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
+async def handle_get_accounts(request):
+    return web.json_response(load_json(ACCOUNTS_FILE, []))
+
+async def handle_get_premium_link(request):
+    acc_id = request.query.get('account_id')
+    accounts = load_json(ACCOUNTS_FILE, [])
+    acc = next((a for a in accounts if a["id"] == acc_id), None)
+    if not acc: return web.json_response({"status": "error", "message": "Не найден"}, status=404)
+    return web.json_response({"status": "ok", "premium_url": "https://t.me/PremiumBot", "proxy": acc.get("proxy", "Нет"), "country": acc.get("proxy_country", "UNKNOWN")})
+
+# --- ВСТРОЕННЫЙ HTML ВЕБ-ПАНЕЛИ ---
+async def handle_index(request):
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        <title>Premium Manager</title>
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
+        <style>
+            :root { --bg: var(--tg-theme-bg-color, #121212); --card: var(--tg-theme-secondary-bg-color, #1e1e1e); --text: var(--tg-theme-text-color, #fff); --hint: var(--tg-theme-hint-color, #888); --success: #2ecc71; --danger: #e74c3c; }
+            body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 16px; }
+            .card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.05); }
+            .header { font-size: 20px; font-weight: 700; margin-bottom: 16px; text-align: center; }
+            .btn { width: 100%; padding: 14px; border: none; border-radius: 12px; font-weight: 700; font-size: 16px; cursor: pointer; margin-top: 10px; }
+            .btn-buy { background: var(--success); color: #fff; padding: 8px; font-size: 14px; margin-top: 10px; width: auto; display: inline-block; }
+            .account-row { display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 0; }
+            .account-row:last-child { border-bottom: none; }
+            .acc-top { display: flex; justify-content: space-between; align-items: center; }
+            .acc-name { font-weight: 700; font-size: 16px; }
+            .acc-phone { font-size: 14px; color: var(--hint); }
+            .acc-details { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; margin-top: 4px; }
+            .detail-item { background: rgba(255,255,255,0.03); padding: 6px; border-radius: 6px; }
+            .detail-label { color: var(--hint); font-size: 11px; display: block; }
+            .status-badge { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; }
+            .prem-yes { background: rgba(46, 204, 113, 0.2); color: var(--success); }
+            .prem-no { background: rgba(231, 76, 60, 0.2); color: var(--danger); }
+            .total-counter { font-size: 14px; color: var(--hint); text-align: center; margin-bottom: 12px; }
+        </style>
+    </head>
+    <body>
+        <div class="header">💎 Premium Manager</div>
+        <div class="total-counter" id="total-counter">Загрузка данных...</div>
+        <div id="accounts-list"></div>
+        <script>
+            const tg = window.Telegram.WebApp; tg.expand();
+            const API_URL = window.location.origin; 
+
+            async function fetchAccounts() {
+                try {
+                    const res = await fetch(`${API_URL}/api/accounts`);
+                    if (!res.ok) throw new Error("Сервер не отвечает");
+                    const accounts = await res.json();
+                    const listEl = document.getElementById('accounts-list');
+                    const counterEl = document.getElementById('total-counter');
+                    if (accounts.length === 0) {
+                        counterEl.innerText = "Нет загруженных аккаунтов";
+                        listEl.innerHTML = "<div style='text-align:center; color:var(--hint);'>Зайди в бота и загрузи ZIP с аккаунтами.</div>";
+                        return;
+                    }
+                    counterEl.innerText = `Всего аккаунтов: ${accounts.length}`;
+                    listEl.innerHTML = accounts.map(acc => {
+                        const premClass = acc.premium ? 'prem-yes' : 'prem-no';
+                        const premText = acc.premium ? `Premium до ${acc.premium_expires}` : 'Без Premium';
+                        return `
+                        <div class="card account-row">
+                            <div class="acc-top">
+                                <div>
+                                    <div class="acc-name">${acc.username} ${acc.first_name}</div>
+                                    <div class="acc-phone">${acc.phone}</div>
+                                </div>
+                                <div class="status-badge ${premClass}">${premText}</div>
+                            </div>
+                            <div class="acc-details">
+                                <div class="detail-item"><span class="detail-label">Страна (IP)</span> ${acc.proxy_country} (${acc.ip})</div>
+                                <div class="detail-item"><span class="detail-label">Устройство</span> ${acc.device}</div>
+                                <div class="detail-item" style="grid-column: span 2;"><span class="detail-label">Прокси</span> ${acc.proxy}</div>
+                            </div>
+                            <button class="btn btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить Premium (1 мес)</button>
+                        </div>
+                        `;
+                    }).join("");
+                } catch (e) { 
+                    document.getElementById('total-counter').innerText = "Ошибка загрузки";
+                    document.getElementById('accounts-list').innerHTML = `<div style='text-align:center; color:var(--danger);'>${e.message}</div>`;
+                }
+            }
+
+            async function buyPremium(accountId) {
+                try {
+                    const res = await fetch(`${API_URL}/api/get_premium_link?account_id=${accountId}`);
+                    const data = await res.json();
+                    if (data.status === 'ok') {
+                        tg.showPopup({
+                            title: 'Оплата Premium (1 месяц)',
+                            message: `Открой @PremiumBot строго через этот прокси:\\n${data.proxy}\\n\\nВ боте выбери "1 месяц" и оплати картой.`,
+                            buttons: [{id: 'open', type: 'default', text: 'Открыть @PremiumBot'}]
+                        }, function(btnId) {
+                            if (btnId === 'open') { tg.openLink(data.premium_url); }
+                        });
+                    } else { tg.showAlert("Ошибка: " + data.message); }
+                } catch (e) { tg.showAlert("Ошибка: " + e.message); }
+            }
+            document.addEventListener('DOMContentLoaded', () => { fetchAccounts(); });
+        </script>
+    </body>
+    </html>
+    """
+    return web.Response(text=html_content, content_type='text/html')
+
+# --- ЛОГИКА БОТА ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚀 Загрузить аккаунты")]], resize_keyboard=True)
@@ -122,7 +242,7 @@ async def process_zip(message: Message, state: FSMContext):
 
 @dp.message(UploadStates.waiting_proxies, F.text)
 async def process_proxies(message: Message, state: FSMContext):
-    await state.set_state(None) # Сбрасываем состояние, чтобы не было дублей
+    await state.set_state(None)
     msg = await message.answer("⏳ Начинаю обработку. Жди...")
     
     try:
@@ -145,14 +265,12 @@ async def process_proxies(message: Message, state: FSMContext):
         return await msg.edit_text("❌ Список прокси пуст. Начни заново /start")
         
     accounts = []
-    # Используем умный поиск папок
     folders = find_tdata_folders(TDATA_DIR)
     
     if not folders:
         return await msg.edit_text("❌ Не найдены файлы TData (key_d) в архиве. Проверь структуру ZIP.")
     
     for i, folder in enumerate(folders):
-        # Берем имя папки как ID
         acc_id = os.path.basename(folder) 
         device = get_sticky_device(acc_id)
         
@@ -204,57 +322,22 @@ async def process_proxies(message: Message, state: FSMContext):
         accounts.append(acc_info)
         save_json(ACCOUNTS_FILE, accounts)
         
-    # --- ВЫВОД В ЧАТ ---
-    await msg.delete() # Удаляем сообщение "Начинаю обработку..."
+    await msg.delete()
     
     if not accounts:
         return await message.answer("❌ Не удалось обработать ни одного аккаунта.")
         
-    await message.answer(f"✅ Обработано: {len(accounts)} шт. Вот результаты:")
+    # Отправляем кнопку для открытия ВЕБ-ПАНЕЛИ
+    web_app = WebAppInfo(url="https://worker-production-578b44ee.up.railway.app/")
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 Открыть панель", web_app=web_app)]], resize_keyboard=True)
     
-    for acc in accounts:
-        prem_text = f"💎 Premium до {acc['premium_expires']}" if acc['premium'] else "❌ Без Premium"
-        status_text = "🟢 Валид" if acc['valid'] else "🔴 Ошибка"
-        
-        text = (
-            f"👤 <b>{acc['username']}</b>\n"
-            f"📱 {acc['phone']} | {status_text}\n"
-            f"{prem_text}\n"
-            f"🌍 Страна: {acc['country']} (IP: {acc['ip']})\n"
-            f"🖥 Устройство: {acc['device']}\n"
-            f"🔗 Прокси: {acc['proxy']}"
-        )
-        
-        # Инлайн-кнопка для покупки (если нужно)
-        kb_buy = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💎 Купить Premium (1 мес)", callback_data=f"buy_{acc['id']}")]
-        ])
-        
-        await message.answer(text, parse_mode="HTML", reply_markup=kb_buy)
-
-# Обработка кнопки покупки
-@dp.callback_query(F.data.startswith("buy_"))
-async def process_buy(callback):
-    acc_id = callback.data.split("_")[1]
-    accounts = load_json(ACCOUNTS_FILE, [])
-    acc = next((a for a in accounts if a["id"] == acc_id), None)
-    
-    if not acc:
-        return await callback.answer("Аккаунт не найден", show_alert=True)
-        
-    text = (
-        f"Для оплаты Premium на аккаунте <b>{acc['username']}</b>:\n\n"
-        f"1. Зайди в @PremiumBot <b>строго через этот прокси</b>:\n"
-        f"<code>{acc['proxy']}</code>\n\n"
-        f"2. Выбери '1 месяц' и оплати картой (Smart Glocal/Stripe)."
-    )
-    await callback.message.answer(text, parse_mode="HTML")
-    await callback.answer()
+    await message.answer(f"✅ Обработано аккаунтов: {len(accounts)}.\nОткрывай панель для управления:", reply_markup=kb)
 
 async def main():
-    # Веб-сервер нужен только для того, чтобы Railway не ругался на отсутствие порта.
-    # Он не используется для WebApp.
-    app = web.Application()
+    app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
+    app.router.add_get('/api/accounts', handle_get_accounts)
+    app.router.add_get('/api/get_premium_link', handle_get_premium_link)
+    app.router.add_get('/', handle_index) # Отдаем HTML прямо с Railway
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
