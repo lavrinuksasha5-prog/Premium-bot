@@ -51,6 +51,11 @@
                     const premText = acc.premium ? `Premium до ${acc.premium_expires}` : 'Нет Premium';
                     const premClass = acc.premium ? 'prem-yes' : 'prem-no';
                     
+                    // Флаги
+                    const flags = { "IT": "🇮🇹", "DE": "🇩🇪", "UA": "🇺🇦", "RU": "🇷🇺", "US": "🇺🇸", "UNKNOWN": "🏳️" };
+                    const accFlag = flags[acc.account_country] || "🏳️";
+                    const proxyFlag = flags[acc.proxy_country] || "🏳️";
+                    
                     return `
                     <div class="card">
                         <div class="row-top">
@@ -61,13 +66,13 @@
                             <div class="${premClass}" style="font-size:11px;">${premText}</div>
                         </div>
                         <div class="row-mid">
-                            <span>🌍 ${acc.account_country || 'UNKNOWN'} (${acc.proxy_country || 'UNKNOWN'})</span>
+                            <span>${accFlag} ${acc.account_country} ${proxyFlag}</span>
                             <span>⚡ ${acc.speed || '0'} ms</span>
                             <span>📱 ${acc.device || 'N/A'}</span>
                         </div>
                         <div class="actions">
                             <button class="btn-action btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить</button>
-                            <button class="btn-action btn-open" onclick="openBot('${acc.id}')">📱 Открыть</button>
+                            <button class="btn-action btn-open" onclick="openBot('${acc.username}')">📱 Открыть</button>
                             <button class="btn-action btn-reconnect" onclick="reconnect('${acc.id}')">🔄 Прокси</button>
                         </div>
                     </div>
@@ -88,8 +93,10 @@
             });
         }
 
-        function openBot(accountId) {
-            tg.showAlert("Функция 'Открыть бота' в разработке (нужен запуск клиента).");
+        function openBot(username) {
+            // Открываем профиль в веб-версии
+            const link = `https://t.me/${username}`;
+            tg.openLink(link);
         }
 
         function reconnect(accountId) {
