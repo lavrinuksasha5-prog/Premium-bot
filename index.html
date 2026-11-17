@@ -11,16 +11,8 @@
         .card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.05); }
         .header { font-size: 20px; font-weight: 700; margin-bottom: 16px; text-align: center; }
         
-        .input-group { margin-bottom: 12px; }
-        .input-group label { display: block; font-size: 14px; color: var(--hint); margin-bottom: 4px; }
-        input[type="file"], textarea { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--bg); background: var(--bg); color: var(--text); box-sizing: border-box; font-size: 14px;}
-        textarea { min-height: 80px; resize: vertical; font-family: monospace; }
-        
         .btn { width: 100%; padding: 14px; border: none; border-radius: 12px; font-weight: 700; font-size: 16px; cursor: pointer; margin-top: 10px; }
-        .btn-primary { background: var(--btn); color: #fff; }
         .btn-buy { background: var(--success); color: #fff; padding: 8px; font-size: 14px; margin-top: 10px; width: auto; display: inline-block; }
-        
-        .result-banner { display: none; background: rgba(46, 204, 113, 0.15); border: 1px solid var(--success); padding: 12px; border-radius: 12px; margin-bottom: 16px; text-align: center; font-weight: 600; color: var(--success); }
         
         .account-row { display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 0; }
         .account-row:last-child { border-bottom: none; }
@@ -43,70 +35,12 @@
 <body>
     <div class="header">💎 Premium Manager</div>
     
-    <div id="result-banner" class="result-banner"></div>
-
-    <div class="card">
-        <div class="input-group">
-            <label>1. Загрузите ZIP с папками TData</label>
-            <input type="file" id="zip-file" accept=".zip">
-        </div>
-        <div class="input-group">
-            <label>2. Список прокси (каждый с новой строки)</label>
-            <textarea id="proxy-list" placeholder="socks5://user:pass@ip:port&#10;socks5://user:pass@ip:port"></textarea>
-        </div>
-        <button class="btn btn-primary" id="btn-process" onclick="processFiles()">🚀 Проверить и распределить</button>
-    </div>
-
-    <div class="total-counter" id="total-counter"></div>
+    <div class="total-counter" id="total-counter">Загрузка данных...</div>
     <div id="accounts-list"></div>
 
     <script>
         const tg = window.Telegram.WebApp; tg.expand();
         const API_URL = "https://worker-production-578b44ee.up.railway.app";
-
-        async function processFiles() {
-            const fileInput = document.getElementById('zip-file');
-            const proxyInput = document.getElementById('proxy-list').value.trim();
-            const btn = document.getElementById('btn-process');
-
-            if (!fileInput.files.length) return tg.showAlert("Выбери ZIP файл!");
-            if (!proxyInput) return tg.showAlert("Вставь прокси!");
-
-            const formData = new FormData();
-            formData.append('tdata_zip', fileInput.files[0]);
-            formData.append('proxies', proxyInput);
-
-            btn.innerText = "⏳ Обработка (это может занять время)...";
-            btn.disabled = true;
-
-            try {
-                const res = await fetch(`${API_URL}/api/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                if (!res.ok) {
-                    throw new Error(`Сервер вернул код ${res.status}`);
-                }
-                
-                const data = await res.json();
-                
-                if (data.status === 'ok') {
-                    const banner = document.getElementById('result-banner');
-                    banner.innerText = "✅ " + data.message;
-                    banner.style.display = 'block';
-                    tg.showAlert(data.message);
-                    fetchAccounts();
-                } else {
-                    tg.showAlert("Ошибка: " + data.message);
-                }
-            } catch (e) {
-                tg.showAlert("Ошибка: " + e.message);
-            } finally {
-                btn.innerText = "🚀 Проверить и распределить";
-                btn.disabled = false;
-            }
-        }
 
         async function fetchAccounts() {
             try {
@@ -118,12 +52,12 @@
                 const counterEl = document.getElementById('total-counter');
                 
                 if (accounts.length === 0) {
-                    counterEl.innerText = "";
-                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint);'>Список пуст. Загрузите архив выше.</div>";
+                    counterEl.innerText = "Нет загруженных аккаунтов";
+                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint);'>Зайди в бота и загрузи ZIP с аккаунтами.</div>";
                     return;
                 }
 
-                counterEl.innerText = `В архиве найдено: ${accounts.length} аккаунтов`;
+                counterEl.innerText = `Всего аккаунтов: ${accounts.length}`;
 
                 listEl.innerHTML = accounts.map(acc => {
                     const premClass = acc.premium ? 'prem-yes' : 'prem-no';
@@ -150,16 +84,14 @@
                     `;
                 }).join("");
             } catch (e) { 
-                console.error(e); 
-                document.getElementById('accounts-list').innerHTML = `<div style='text-align:center; color:var(--danger);'>Ошибка загрузки: ${e.message}</div>`;
+                document.getElementById('total-counter').innerText = "Ошибка загрузки";
+                document.getElementById('accounts-list').innerHTML = `<div style='text-align:center; color:var(--danger);'>${e.message}</div>`;
             }
         }
 
         async function buyPremium(accountId) {
             try {
                 const res = await fetch(`${API_URL}/api/get_premium_link?account_id=${accountId}`);
-                if (!res.ok) throw new Error("Сервер не отвечает");
-                
                 const data = await res.json();
                 
                 if (data.status === 'ok') {
