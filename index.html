@@ -104,9 +104,7 @@
             tg.openLink(link);
         }
 
-        // --- ФУНКЦИЯ СМЕНЫ ПРОКСИ ПРЯМО В ПАНЕЛИ ---
         async function changeProxy(accountId) {
-            // Вызываем встроенное окно ввода
             const newProxy = prompt("Введите новый прокси (формат: socks5://user:pass@ip:port):");
             if (!newProxy) return;
 
@@ -119,8 +117,8 @@
                 
                 const data = await res.json();
                 if (data.status === 'ok') {
-                    tg.showAlert("✅ Прокси успешно обновлен!");
-                    fetchAccounts(); // Обновляем карточки без перезагрузки
+                    tg.showAlert("✅ Прокси обновлен!");
+                    window.location.reload(); 
                 } else {
                     tg.showAlert("Ошибка: " + data.message);
                 }
