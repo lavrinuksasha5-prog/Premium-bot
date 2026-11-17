@@ -112,22 +112,34 @@ async def cors_middleware(request, handler):
 async def handle_get_accounts(request):
     return web.json_response(load_json(ACCOUNTS_FILE, []))
 
+async def handle_update_proxy(request):
+    try:
+        data = await request.json()
+        acc_id = data.get("account_id")
+        new_proxy = data.get("new_proxy")
+        
+        accounts = load_json(ACCOUNTS_FILE, [])
+        acc = next((a for a in accounts if a["id"] == acc_id), None)
+        
+        if acc:
+            ip = new_proxy.split('@')[-1].split(':')[0] if '@' in new_proxy else new_proxy.split(':')[0]
+            country = get_ip_country(ip)
+            
+            acc["proxy"] = new_proxy
+            acc["proxy_country"] = COUNTRY_NAMES.get(country, "Неизвестно")
+            acc["proxy_flag"] = FLAGS.get(country, "🏳️")
+            acc["ip"] = ip
+            
+            save_json(ACCOUNTS_FILE, accounts)
+            return web.json_response({"status": "ok"})
+        return web.json_response({"status": "error", "message": "Аккаунт не найден"}, status=404)
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
 async def handle_index(request):
     html_path = Path(__file__).parent / "index.html"
     if html_path.exists(): return web.FileResponse(html_path)
     return web.Response(text="Ошибка: index.html не найден", status=404)
-
-# --- ОБРАБОТКА КНОПКИ СМЕНЫ ПРОКСИ ---
-@dp.message(F.web_app_data)
-async def handle_web_app_data(message: Message):
-    try:
-        data = json.loads(message.web_app_data.data)
-        if data.get("action") == "change_proxy":
-            acc_id = data.get("acc_id")
-            user_states[message.from_user.id] = f"changing_proxy_{acc_id}"
-            await message.answer(f"Введи новый прокси для аккаунта {acc_id}:\nФормат: `socks5://user:pass@ip:port`")
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}")
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -160,36 +172,8 @@ async def process_zip(message: Message):
 
 @dp.message(F.text)
 async def process_proxies(message: Message):
-    user_id = message.from_user.id
-    state = user_states.get(user_id)
-    
-    # 1. Если это смена прокси
-    if state and state.startswith("changing_proxy_"):
-        acc_id = state.replace("changing_proxy_", "")
-        new_proxy = message.text.strip()
-        
-        accounts = load_json(ACCOUNTS_FILE, [])
-        acc = next((a for a in accounts if a["id"] == acc_id), None)
-        
-        if acc:
-            ip = new_proxy.split('@')[-1].split(':')[0] if '@' in new_proxy else new_proxy.split(':')[0]
-            country = get_ip_country(ip)
-            
-            acc["proxy"] = new_proxy
-            acc["proxy_country"] = COUNTRY_NAMES.get(country, "Неизвестно")
-            acc["proxy_flag"] = FLAGS.get(country, "🏳️")
-            acc["ip"] = ip
-            
-            save_json(ACCOUNTS_FILE, accounts)
-            user_states[user_id] = None
-            await message.answer("✅ Прокси успешно изменен! Зайди в панель и обнови.")
-        else:
-            await message.answer("❌ Аккаунт не найден.")
-        return
-
-    # 2. Если это обработка нового архива
-    if state != "waiting_proxies": return
-    user_states[user_id] = None
+    if user_states.get(message.from_user.id) != "waiting_proxies": return
+    user_states[message.from_user.id] = None
     
     status_msg = await message.answer("⏳ Сканирую архив...")
     
@@ -267,6 +251,7 @@ async def process_proxies(message: Message):
 async def main():
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
     app.router.add_get('/api/accounts', handle_get_accounts)
+    app.router.add_post('/api/update_proxy', handle_update_proxy)
     app.router.add_get('/', handle_index) 
     
     runner = web.AppRunner(app)
