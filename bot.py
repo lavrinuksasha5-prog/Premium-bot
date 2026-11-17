@@ -27,7 +27,6 @@ WORK_DIR = data_dir / "work"
 WORK_DIR.mkdir(exist_ok=True)
 TEMP_ZIP = data_dir / "temp.zip"
 
-# Глобальная переменная для хранения шага пользователя
 user_states = {}
 
 def load_json(file_path, default):
@@ -40,6 +39,13 @@ def load_json(file_path, default):
 def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
+def get_ip_country(ip):
+    try:
+        r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,countryCode", timeout=3)
+        if r.json().get("status") == "success": return r.json().get("countryCode")
+    except: pass
+    return "UNKNOWN"
+
 @web.middleware
 async def cors_middleware(request, handler):
     if request.method == 'OPTIONS':
@@ -51,46 +57,31 @@ async def cors_middleware(request, handler):
 async def handle_get_accounts(request):
     return web.json_response(load_json(ACCOUNTS_FILE, []))
 
-async def handle_get_premium_link(request):
-    acc_id = request.query.get('account_id')
-    accounts = load_json(ACCOUNTS_FILE, [])
-    acc = next((a for a in accounts if a["id"] == acc_id), None)
-    if not acc: return web.json_response({"status": "error", "message": "Не найден"}, status=404)
-    return web.json_response({"status": "ok", "premium_url": "https://t.me/PremiumBot", "proxy": acc.get("proxy", "Нет"), "country": acc.get("proxy_country", "UNKNOWN")})
-
 async def handle_index(request):
     html_path = Path(__file__).parent / "index.html"
     if html_path.exists(): return web.FileResponse(html_path)
-    return web.Response(text="Ошибка: файл index.html не найден на сервере", status=404)
+    return web.Response(text="Ошибка: файл index.html не найден", status=404)
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    user_id = message.from_user.id
-    user_states[user_id] = None # Сбрасываем состояние
-    
+    user_states[message.from_user.id] = None
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚀 Загрузить TData")]], resize_keyboard=True)
     await message.answer("Привет. Жми кнопку, чтобы загрузить ZIP.", reply_markup=kb)
 
 @dp.message(F.text == "🚀 Загрузить TData")
 async def start_work_btn(message: Message):
-    user_id = message.from_user.id
-    user_states[user_id] = "waiting_zip" # Запоминаем, что ждем ZIP
-    
+    user_states[message.from_user.id] = "waiting_zip"
     await message.answer("Скинь ZIP-архив.", reply_markup=ReplyKeyboardRemove())
 
 @dp.message(F.document)
 async def process_zip(message: Message):
-    user_id = message.from_user.id
+    if user_states.get(message.from_user.id) != "waiting_zip": return
+    if not message.document.file_name.endswith('.zip'): return await message.answer("Это не ZIP файл.")
     
-    # Проверяем, ждем ли мы от него ZIP
-    if user_states.get(user_id) != "waiting_zip":
-        return # Если не ждем, игнорируем
-        
-    if not message.document.file_name.endswith('.zip'): 
-        return await message.answer("Это не ZIP файл.")
+    user_states[message.from_user.id] = "waiting_proxies"
     
-    user_states[user_id] = "waiting_proxies" # Теперь ждем прокси
-    msg = await message.answer("⏳ Скачиваю архив...")
+    # Отправляем одно сообщение, которое будем редактировать
+    status_msg = await message.answer("⏳ Скачиваю архив...")
     
     await bot.download(message.document, destination=TEMP_ZIP)
     if WORK_DIR.exists(): shutil.rmtree(WORK_DIR)
@@ -98,79 +89,66 @@ async def process_zip(message: Message):
     
     try:
         with zipfile.ZipFile(TEMP_ZIP) as z: z.extractall(WORK_DIR)
-        await msg.edit_text("✅ Архив распакован. Теперь скинь список прокси текстом.")
+        # Меняем текст в том же сообщении
+        await status_msg.edit_text("✅ Архив распакован. Теперь скинь список прокси текстом.")
     except Exception as e: 
-        await msg.edit_text(f"❌ Ошибка распаковки: {e}")
+        await status_msg.edit_text(f"❌ Ошибка распаковки: {e}")
 
 @dp.message(F.text)
 async def process_proxies(message: Message):
-    user_id = message.from_user.id
+    if user_states.get(message.from_user.id) != "waiting_proxies": return
+    user_states[message.from_user.id] = None
     
-    # Проверяем, ждем ли мы от него прокси
-    if user_states.get(user_id) != "waiting_proxies":
-        return # Если не ждем, игнорируем
-        
-    user_states[user_id] = None # Сбрасываем состояние СРАЗУ, чтобы не было дублей
+    # Отправляем новое сообщение со статусом, которое будем редактировать
+    status_msg = await message.answer("⏳ Сканирую архив и подбираю прокси...")
     
-    msg = await message.answer("⏳ Начинаю сканировать архив. Ищу любые сессии...")
-    
-    found_accounts = []
-    processed = set()
-    
-    tdata_reader_available = True
-    try:
-        from tdata_reader import read_tdata
-    except ImportError:
-        tdata_reader_available = False
+    proxies = []
+    for line in message.text.strip().split('\n'):
+        line = line.strip()
+        if not line: continue
+        ip = line.split('@')[-1].split(':')[0] if '@' in line else line.split(':')[0]
+        country = get_ip_country(ip)
+        proxies.append({"raw": line, "country": country, "speed": random.randint(30, 150)})
 
-    # 1. ИЩЕМ JSON-ФАЙЛЫ
+    found_accounts = []
+    
     for root, dirs, files in os.walk(WORK_DIR):
         for file in files:
-            if file.endswith(".json"):
-                json_path = os.path.join(root, file)
-                acc_id = file.replace(".json", "")
-                if acc_id in processed: continue
-                try:
-                    with open(json_path, "r", encoding="utf-8") as f: data = json.load(f)
-                    session_str = data.get("session_string") or data.get("session") or data.get("StringSession")
-                    api_id = data.get("api_id") or data.get("app_id")
-                    api_hash = data.get("api_hash") or data.get("app_hash")
-                    
-                    if session_str and api_id and api_hash:
-                        found_accounts.append({"id": acc_id, "username": f"JSON: {acc_id}", "first_name": "", "phone": "N/A", "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", "premium": False, "premium_expires": "Нет", "device": "JSON Сессия", "proxy": message.text.strip()[:20]})
-                        processed.add(acc_id)
-                except:
-                    pass
-
-    # 2. ИЩЕМ ПАПКИ TDATA
-    for root, dirs, files in os.walk(WORK_DIR):
+            if file.endswith(".json"): pass
         if "key_d" in files or "key_datas" in files:
             folder_name = os.path.basename(root)
-            if folder_name in processed: continue
             
-            if tdata_reader_available:
-                try:
-                    acc = read_tdata(root)
-                    found_accounts.append({"id": folder_name, "username": f"TData: {folder_name}", "first_name": "", "phone": "N/A", "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", "premium": False, "premium_expires": "Нет", "device": "TData Сессия", "proxy": message.text.strip()[:20]})
-                    processed.add(folder_name)
-                except Exception as e:
-                    print(f"Не удалось прочитать TData {folder_name}: {e}")
+            acc_country = "UNKNOWN"
+            if folder_name.startswith("380"): acc_country = "UA"
+            elif folder_name.startswith("7"): acc_country = "RU"
+            elif folder_name.startswith("39"): acc_country = "IT"
+            
+            best_proxy = proxies[0] if proxies else {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
+            matching = [p for p in proxies if p["country"] == acc_country]
+            if matching:
+                best_proxy = matching[0]
+            
+            found_accounts.append({
+                "id": folder_name, "username": f"Аккаунт {folder_name}", "first_name": "", "phone": folder_name, 
+                "account_country": acc_country, "proxy_country": best_proxy["country"], "speed": best_proxy["speed"],
+                "premium": False, "premium_expires": "Нет", "device": "iPhone 13 (TData)", "proxy": best_proxy["raw"]
+            })
 
     save_json(ACCOUNTS_FILE, found_accounts)
     
     if not found_accounts:
-        await msg.edit_text("❌ В архиве не найдено ни JSON с сессиями, ни читаемых папок TData.")
+        await status_msg.edit_text("❌ Аккаунты не найдены.")
         return
         
     web_app = WebAppInfo(url="https://worker-production-578b44ee.up.railway.app/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 Открыть панель", web_app=web_app)]], resize_keyboard=True)
     
-    await msg.edit_text(f"✅ Найдено аккаунтов: {len(found_accounts)}.\nОткрывай панель:", reply_markup=kb)
+    # Редактируем то же сообщение на финальный результат
+    await status_msg.edit_text(f"✅ Найдено аккаунтов: {len(found_accounts)}.\nОткрывай панель:", reply_markup=kb)
 
 async def main():
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
     app.router.add_get('/api/accounts', handle_get_accounts)
-    app.router.add_get('/api/get_premium_link', handle_get_premium_link)
     app.router.add_get('/', handle_index) 
     
     runner = web.AppRunner(app)
