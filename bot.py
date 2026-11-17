@@ -12,16 +12,13 @@ from urllib.parse import urlparse
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiohttp import web
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
 
 bot = Bot(token=TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher()
 
 data_dir = Path("/app/data")
 data_dir.mkdir(parents=True, exist_ok=True)
@@ -30,9 +27,8 @@ WORK_DIR = data_dir / "work"
 WORK_DIR.mkdir(exist_ok=True)
 TEMP_ZIP = data_dir / "temp.zip"
 
-class UploadStates(StatesGroup):
-    waiting_zip = State()
-    waiting_proxies = State()
+# Глобальная переменная для хранения шага пользователя
+user_states = {}
 
 def load_json(file_path, default):
     if file_path.exists():
@@ -69,20 +65,31 @@ async def handle_index(request):
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
+    user_id = message.from_user.id
+    user_states[user_id] = None # Сбрасываем состояние
+    
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚀 Загрузить TData")]], resize_keyboard=True)
     await message.answer("Привет. Жми кнопку, чтобы загрузить ZIP.", reply_markup=kb)
 
 @dp.message(F.text == "🚀 Загрузить TData")
-async def start_work_btn(message: Message, state: FSMContext):
-    await state.set_state(UploadStates.waiting_zip)
+async def start_work_btn(message: Message):
+    user_id = message.from_user.id
+    user_states[user_id] = "waiting_zip" # Запоминаем, что ждем ZIP
+    
     await message.answer("Скинь ZIP-архив.", reply_markup=ReplyKeyboardRemove())
 
-@dp.message(UploadStates.waiting_zip, F.document)
-async def process_zip(message: Message, state: FSMContext):
+@dp.message(F.document)
+async def process_zip(message: Message):
+    user_id = message.from_user.id
+    
+    # Проверяем, ждем ли мы от него ZIP
+    if user_states.get(user_id) != "waiting_zip":
+        return # Если не ждем, игнорируем
+        
     if not message.document.file_name.endswith('.zip'): 
         return await message.answer("Это не ZIP файл.")
     
-    await state.set_state(UploadStates.waiting_proxies)
+    user_states[user_id] = "waiting_proxies" # Теперь ждем прокси
     msg = await message.answer("⏳ Скачиваю архив...")
     
     await bot.download(message.document, destination=TEMP_ZIP)
@@ -95,21 +102,26 @@ async def process_zip(message: Message, state: FSMContext):
     except Exception as e: 
         await msg.edit_text(f"❌ Ошибка распаковки: {e}")
 
-@dp.message(UploadStates.waiting_proxies, F.text)
-async def process_proxies(message: Message, state: FSMContext):
-    await state.clear()
+@dp.message(F.text)
+async def process_proxies(message: Message):
+    user_id = message.from_user.id
+    
+    # Проверяем, ждем ли мы от него прокси
+    if user_states.get(user_id) != "waiting_proxies":
+        return # Если не ждем, игнорируем
+        
+    user_states[user_id] = None # Сбрасываем состояние СРАЗУ, чтобы не было дублей
+    
     msg = await message.answer("⏳ Начинаю сканировать архив. Ищу любые сессии...")
     
-    try:
-        from telethon import TelegramClient
-        from telethon.sessions import StringSession
-        from telethon.tl.functions.users import GetFullUserRequest
-        from tdata_reader import read_tdata
-    except ImportError as e:
-        return await msg.edit_text(f"❌ Ошибка импорта библиотек: {e}")
-
     found_accounts = []
     processed = set()
+    
+    tdata_reader_available = True
+    try:
+        from tdata_reader import read_tdata
+    except ImportError:
+        tdata_reader_available = False
 
     # 1. ИЩЕМ JSON-ФАЙЛЫ
     for root, dirs, files in os.walk(WORK_DIR):
@@ -130,19 +142,19 @@ async def process_proxies(message: Message, state: FSMContext):
                 except:
                     pass
 
-    # 2. ИЩЕМ ПАПКИ TDATA (с key_d или key_datas)
+    # 2. ИЩЕМ ПАПКИ TDATA
     for root, dirs, files in os.walk(WORK_DIR):
         if "key_d" in files or "key_datas" in files:
             folder_name = os.path.basename(root)
             if folder_name in processed: continue
-            try:
-                # Пробуем прочитать через tdata_reader
-                acc = read_tdata(root)
-                # Если получилось, добавляем
-                found_accounts.append({"id": folder_name, "username": f"TData: {folder_name}", "first_name": "", "phone": "N/A", "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", "premium": False, "premium_expires": "Нет", "device": "TData Сессия", "proxy": message.text.strip()[:20]})
-                processed.add(folder_name)
-            except Exception as e:
-                print(f"Не удалось прочитать TData {folder_name}: {e}")
+            
+            if tdata_reader_available:
+                try:
+                    acc = read_tdata(root)
+                    found_accounts.append({"id": folder_name, "username": f"TData: {folder_name}", "first_name": "", "phone": "N/A", "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", "premium": False, "premium_expires": "Нет", "device": "TData Сессия", "proxy": message.text.strip()[:20]})
+                    processed.add(folder_name)
+                except Exception as e:
+                    print(f"Не удалось прочитать TData {folder_name}: {e}")
 
     save_json(ACCOUNTS_FILE, found_accounts)
     
