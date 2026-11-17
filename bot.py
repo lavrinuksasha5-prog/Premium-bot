@@ -34,10 +34,15 @@ class UploadStates(StatesGroup):
     waiting_zip = State()
     waiting_proxies = State()
 
-# Инициализация Telethon при первом запуске
-from telethon import TelegramClient
-from telethon.sessions import StringSession
-from telethon.tl.functions.users import GetFullUserRequest
+def load_json(file_path, default):
+    if file_path.exists():
+        try:
+            with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
+        except Exception: return default
+    return default
+
+def save_json(file_path, data):
+    with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
 @web.middleware
 async def cors_middleware(request, handler):
@@ -50,20 +55,18 @@ async def cors_middleware(request, handler):
 async def handle_get_accounts(request):
     return web.json_response(load_json(ACCOUNTS_FILE, []))
 
+async def handle_get_premium_link(request):
+    acc_id = request.query.get('account_id')
+    accounts = load_json(ACCOUNTS_FILE, [])
+    acc = next((a for a in accounts if a["id"] == acc_id), None)
+    if not acc: return web.json_response({"status": "error", "message": "Не найден"}, status=404)
+    return web.json_response({"status": "ok", "premium_url": "https://t.me/PremiumBot", "proxy": acc.get("proxy", "Нет"), "country": acc.get("proxy_country", "UNKNOWN")})
+
 async def handle_index(request):
     html_path = Path(__file__).parent / "index.html"
-    if html_path.exists(): return web.FileResponse(html_path)
-    return web.Response(text="Ошибка: index.html не найден", status=404)
-
-def load_json(file_path, default):
-    if file_path.exists():
-        try:
-            with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
-        except Exception: return default
-    return default
-
-def save_json(file_path, data):
-    with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+    if html_path.exists():
+        return web.FileResponse(html_path)
+    return web.Response(text="Ошибка: файл index.html не найден на сервере", status=404)
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -95,14 +98,14 @@ async def process_zip(message: Message, state: FSMContext):
 @dp.message(UploadStates.waiting_proxies, F.text)
 async def process_proxies(message: Message, state: FSMContext):
     await state.clear()
-    msg = await message.answer("⏳ Ищу аккаунты в глубине архива...")
+    msg = await message.answer("⏳ Ищу аккаунты в архиве...")
     
-    # Рекурсивный поиск всех файлов
     found_accounts = []
+    
+    # Ищем JSON-файлы с сессиями на любой глубине
     for root, dirs, files in os.walk(TDATA_DIR):
         for file in files:
             if file.endswith(".json"):
-                # Пробуем прочитать JSON
                 json_path = os.path.join(root, file)
                 acc_id = file.replace(".json", "")
                 try:
@@ -112,12 +115,11 @@ async def process_proxies(message: Message, state: FSMContext):
                     api_hash = data.get("api_hash")
                     
                     if session_str and api_id and api_hash:
-                        # Добавляем аккаунт-заглушку, чтобы ты увидел, что он его нашел
                         found_accounts.append({
                             "id": acc_id, "username": f"Найден JSON: {acc_id}", "first_name": "", "phone": "N/A", 
                             "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", 
                             "premium": False, "premium_expires": "Нет", 
-                            "device": "Устройство не проверено", "proxy": "Прокси не назначен"
+                            "device": "Устройство не проверено", "proxy": message.text.strip()[:20]
                         })
                 except:
                     pass
@@ -136,7 +138,9 @@ async def process_proxies(message: Message, state: FSMContext):
 async def main():
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
     app.router.add_get('/api/accounts', handle_get_accounts)
-    app.router.add_get('/', handle_index)
+    app.router.add_get('/api/get_premium_link', handle_get_premium_link)
+    app.router.add_get('/', handle_index)  # <--- ЭТА СТРОКА БЫЛА ПРОПУЩЕНА РАНЬШЕ!
+    
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
