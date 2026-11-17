@@ -20,6 +20,7 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
 from tdata_reader import read_tdata
 from python_socks import ProxyType
+from python_socks.sync import Proxy
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
@@ -47,33 +48,51 @@ def load_json(file_path, default):
 def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- ПРОВЕРКА ПРОКСИ И ОПРЕДЕЛЕНИЕ СТРАНЫ ---
+# --- ФОРМАТИРОВАНИЕ ПРОКСИ ---
+def format_proxy_url(proxy_str):
+    p_str = proxy_str.strip()
+    if "://" in p_str:
+        return p_str
+    parts = p_str.split(':')
+    if len(parts) == 4:
+        host, port, login, password = parts
+        return f"socks5://{login}:{password}@{host}:{port}"
+    return f"socks5://{p_str}"
+
 def check_proxy(proxy_str):
-    """
-    Проверяет прокси. Возвращает (is_alive, country_code, ping_ms).
-    """
+    p_url = format_proxy_url(proxy_str)
+    parsed = urlparse(p_url)
+    host = parsed.hostname
+    port = parsed.port
+    login = parsed.username
+    password = parsed.password
+    
+    start_time = time.time()
     try:
-        # Парсим прокси для проверки через requests
-        if "socks" in proxy_str:
-            proxies = {'http': proxy_str, 'https': proxy_str}
-        else:
-            proxies = {'http': f'http://{proxy_str}', 'https': f'http://{proxy_str}'}
-        
-        # Замеряем пинг и проверяем доступность
-        start_time = time.time()
-        r = requests.get("http://ip-api.com/json/?fields=status,countryCode,query", 
-                         proxies=proxies, timeout=5)
+        # Проверяем подключение к Telegram (149.154.167.51:443)
+        proxy = Proxy.create(
+            proxy_type=ProxyType.SOCKS5 if parsed.scheme == 'socks5' else ProxyType.HTTP,
+            host=host, port=port, username=login, password=password
+        )
+        conn = proxy.connect(dest_host='149.154.167.51', dest_port=443, timeout=5)
+        conn.close()
         ping_ms = int((time.time() - start_time) * 1000)
         
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("status") == "success":
-                return True, data.get("countryCode"), ping_ms
+        # Узнаем страну
+        country = "UNKNOWN"
+        try:
+            r = requests.get("http://ip-api.com/json/?fields=status,countryCode", 
+                             proxies={'http': p_url, 'https': p_url}, timeout=3)
+            if r.status_code == 200 and r.json().get("status") == "success":
+                country = r.json().get("countryCode")
+        except: pass
+            
+        return True, country, ping_ms
     except Exception as e:
-        print(f"Прокси мертв: {e}")
-    
-    return False, "UNKNOWN", 0
+        print(f"Прокси не прошел проверку: {e}")
+        return False, "UNKNOWN", 0
 
+# --- ДАННЫЕ СТРАН ---
 COUNTRY_NAMES = {
     "RU": "Россия", "UA": "Украина", "IT": "Италия", "DE": "Германия", 
     "FR": "Франция", "US": "США", "GB": "Великобритания", "ES": "Испания",
@@ -134,7 +153,7 @@ async def handle_update_proxy(request):
         acc_id = data.get("account_id")
         new_proxy = data.get("new_proxy")
         
-        # Проверяем новый прокси перед сохранением
+        # Проверяем новый прокси
         is_alive, country, ping = check_proxy(new_proxy)
         if not is_alive:
             return web.json_response({"status": "error", "message": "Прокси не работает"}, status=400)
@@ -143,7 +162,8 @@ async def handle_update_proxy(request):
         acc = next((a for a in accounts if a["id"] == acc_id), None)
         
         if acc:
-            acc["proxy"] = new_proxy
+            formatted_proxy = format_proxy_url(new_proxy)
+            acc["proxy"] = formatted_proxy
             acc["proxy_country"] = COUNTRY_NAMES.get(country, "Неизвестно")
             acc["proxy_flag"] = FLAGS.get(country, "🏳️")
             acc["speed"] = ping
@@ -198,7 +218,7 @@ async def process_proxies(message: Message):
     if user_states.get(message.from_user.id) != "waiting_proxies": return
     user_states[message.from_user.id] = None
     
-    status_msg = await message.answer("⏳ Проверяю прокси и подключаюсь к аккаунтам. Жди...")
+    status_msg = await message.answer("⏳ Проверяю прокси и подключаюсь...")
     
     raw_proxies = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
     
@@ -206,12 +226,12 @@ async def process_proxies(message: Message):
     for p in raw_proxies:
         is_alive, country, ping = check_proxy(p)
         if is_alive:
-            valid_proxies.append({"raw": p, "country": country, "speed": ping})
+            valid_proxies.append({"raw": format_proxy_url(p), "country": country, "speed": ping})
         else:
             print(f"Прокси {p} отброшен (мертв)")
 
     if not valid_proxies:
-        return await status_msg.edit_text("❌ Все прокси оказались нерабочими. Попробуй другие.")
+        return await status_msg.edit_text("❌ Все прокси оказались нерабочими.")
 
     found_accounts = []
     processed_ids = set()
