@@ -40,7 +40,21 @@ def load_json(file_path, default):
 def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- ГЕНЕРАТОР УСТРОЙСТВ (STICKY) ---
+def get_ip_country(ip):
+    try:
+        r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,countryCode", timeout=3)
+        if r.json().get("status") == "success": return r.json().get("countryCode")
+    except: pass
+    return "UNKNOWN"
+
+def get_country_by_phone(phone):
+    if phone.startswith("380"): return "UA"
+    if phone.startswith("7"): return "RU"
+    if phone.startswith("39"): return "IT"
+    if phone.startswith("49"): return "DE"
+    if phone.startswith("33"): return "FR"
+    return "UNKNOWN"
+
 IPHONE_MODELS = ["iPhone 14 Pro", "iPhone 13", "iPhone 12", "iPhone 15"]
 ANDROID_MODELS = ["Samsung Galaxy S23", "Xiaomi 13 Pro", "Google Pixel 7"]
 MAC_MODELS = ["MacBook Pro M2", "MacBook Air M1"]
@@ -63,13 +77,6 @@ def get_sticky_device(acc_id):
         devices[acc_id] = generate_unique_device()
         save_json(DEVICES_FILE, devices)
     return devices[acc_id]
-
-def get_ip_country(ip):
-    try:
-        r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,countryCode", timeout=3)
-        if r.json().get("status") == "success": return r.json().get("countryCode")
-    except: pass
-    return "UNKNOWN"
 
 @web.middleware
 async def cors_middleware(request, handler):
@@ -121,9 +128,8 @@ async def process_proxies(message: Message):
     if user_states.get(message.from_user.id) != "waiting_proxies": return
     user_states[message.from_user.id] = None
     
-    status_msg = await message.answer("⏳ Сканирую архив, подбираю прокси и IP...")
+    status_msg = await message.answer("⏳ Сканирую архив...")
     
-    # Парсим прокси
     proxies = []
     for line in message.text.strip().split('\n'):
         line = line.strip()
@@ -133,47 +139,78 @@ async def process_proxies(message: Message):
         proxies.append({"raw": line, "country": country, "speed": random.randint(30, 150)})
 
     found_accounts = []
-    
+    processed_ids = set()
+
     for root, dirs, files in os.walk(WORK_DIR):
+        # 1. Ищем JSON с номером
+        for file in files:
+            if file.endswith(".json"):
+                acc_id = file.replace(".json", "")
+                if acc_id in processed_ids: continue
+                
+                phone = acc_id
+                acc_country = get_country_by_phone(phone)
+                
+                best_proxy = None
+                matching = [p for p in proxies if p["country"] == acc_country]
+                if matching: best_proxy = matching[0]
+                elif proxies: best_proxy = proxies[0]
+                else: best_proxy = {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
+
+                unique_ip = f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
+                device = get_sticky_device(acc_id)
+                
+                found_accounts.append({
+                    "id": acc_id, 
+                    "username": f"Аккаунт {phone}", 
+                    "first_name": "", 
+                    "phone": f"+{phone}", 
+                    "account_country": acc_country, 
+                    "proxy_country": best_proxy["country"], 
+                    "ip": unique_ip,
+                    "speed": best_proxy["speed"],
+                    "premium": False, 
+                    "premium_expires": "Нет", 
+                    "device": f"{device['model']} ({device['system']})", 
+                    "proxy": best_proxy["raw"]
+                })
+                processed_ids.add(acc_id)
+                
+        # 2. Если JSON нет, ищем папки (tdata)
         if "key_d" in files or "key_datas" in files:
             folder_name = os.path.basename(root)
+            if folder_name == "tdata":
+                folder_name = os.path.basename(os.path.dirname(root))
+                
+            if folder_name in processed_ids: continue
             
-            # Определяем страну аккаунта (заглушка по номеру)
-            acc_country = "UNKNOWN"
-            if folder_name.startswith("380"): acc_country = "UA"
-            elif folder_name.startswith("7"): acc_country = "RU"
-            elif folder_name.startswith("39"): acc_country = "IT"
+            phone = folder_name
+            acc_country = get_country_by_phone(phone)
             
-            # Гео-матчинг: ищем прокси для страны аккаунта
             best_proxy = None
             matching = [p for p in proxies if p["country"] == acc_country]
-            
-            if matching:
-                best_proxy = matching[0] # Берем первый подходящий
-            elif proxies:
-                best_proxy = proxies[0] # Если нет совпадений, берем любой
-            else:
-                best_proxy = {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
+            if matching: best_proxy = matching[0]
+            elif proxies: best_proxy = proxies[0]
+            else: best_proxy = {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
 
-            # Генерируем уникальный IP для каждого аккаунта (имитация ротации)
             unique_ip = f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
-            
             device = get_sticky_device(folder_name)
             
             found_accounts.append({
                 "id": folder_name, 
-                "username": f"Аккаунт {folder_name}", 
+                "username": f"Аккаунт {phone}", 
                 "first_name": "", 
-                "phone": folder_name, 
+                "phone": f"+{phone}", 
                 "account_country": acc_country, 
                 "proxy_country": best_proxy["country"], 
-                "ip": unique_ip,  # <--- Уникальный IP
+                "ip": unique_ip,
                 "speed": best_proxy["speed"],
                 "premium": False, 
                 "premium_expires": "Нет", 
                 "device": f"{device['model']} ({device['system']})", 
                 "proxy": best_proxy["raw"]
             })
+            processed_ids.add(folder_name)
 
     save_json(ACCOUNTS_FILE, found_accounts)
     
