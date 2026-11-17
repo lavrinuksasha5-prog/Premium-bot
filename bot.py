@@ -21,6 +21,11 @@ TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
 ADMIN_ID = 8720671692 
 
+# Проверка токена при старте
+if not TOKEN:
+    print("❌ ОШИБКА: Переменная BOT_TOKEN не задана в Railway!")
+    exit(1)
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -86,6 +91,7 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
+# --- ВЕБ-СЕРВЕР (CORS) ---
 @web.middleware
 async def cors_middleware(request, handler):
     if request.method == 'OPTIONS':
@@ -104,8 +110,10 @@ async def handle_get_premium_link(request):
     if not acc: return web.json_response({"status": "error", "message": "Не найден"}, status=404)
     return web.json_response({"status": "ok", "premium_url": "https://t.me/PremiumBot", "proxy": acc.get("proxy", "Нет"), "country": acc.get("proxy_country", "UNKNOWN")})
 
+# --- БОТ ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
+    print(f"ПОЛУЧЕНО /START от {message.from_user.id}")
     if message.from_user.id == ADMIN_ID:
         kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚀 Начать работу")]], resize_keyboard=True)
         await message.answer("Нажми на кнопку ниже 👇", reply_markup=kb)
@@ -132,10 +140,13 @@ async def process_zip(message: Message, state: FSMContext):
 
 @dp.message(UploadStates.waiting_proxies, F.text)
 async def process_proxies(message: Message, state: FSMContext):
-    from telethon import TelegramClient
-    from telethon.sessions import StringSession
-    from telethon.tl.functions.users import GetFullUserRequest
-    from tdata_reader import read_tdata
+    try:
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        from telethon.tl.functions.users import GetFullUserRequest
+        from tdata_reader import read_tdata
+    except ImportError as e:
+        return await message.answer(f"❌ Ошибка импорта библиотек: {e}\nПроверь requirements.txt")
 
     proxies_text = message.text.strip()
     await message.answer("⏳ Начинаю обработку. Буду делать паузы. Жди...")
@@ -145,33 +156,43 @@ async def process_proxies(message: Message, state: FSMContext):
         if not p_raw: continue
         p_tuple, p_str, p_ip = parse_proxy(p_raw)
         proxy_list.append({"raw": p_str, "tuple": p_tuple, "country": get_ip_country(p_ip)})
+    
     if not proxy_list:
         await state.clear()
         return await message.answer("❌ Список прокси пуст. Начни заново /start")
+        
     accounts = []
     folders = [d for d in TDATA_DIR.iterdir() if d.is_dir()]
+    
     for i, folder in enumerate(folders):
         acc_id = folder.name 
         device = get_sticky_device(acc_id)
         acc_info = {"id": acc_id, "username": "Ошибка", "first_name": "", "phone": "N/A", "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", "time": datetime.now().strftime("%H:%M"), "premium": False, "premium_expires": "Нет", "valid": False, "device": f"{device['model']} ({device['system']})", "proxy": "Нет"}
-        await asyncio.sleep(random.uniform(2.0, 7.0))
+        
+        await asyncio.sleep(random.uniform(2.0, 5.0)) # Пауза для анти-бана
+        
         try:
             acc = read_tdata(str(folder))
             session_string = acc.to_string_session()
             temp_proxy = random.choice(proxy_list)
+            
             client = TelegramClient(StringSession(session_string), acc.api_id, acc.api_hash, device_model=device['model'], system_version=device['system'], app_version=device['app'], proxy=temp_proxy['tuple'])
             await client.connect()
+            
             if await client.is_user_authorized():
                 me = await client.get_me()
                 acc_info["username"] = me.username or me.first_name or "Без юзернейма"
                 acc_info["first_name"] = me.first_name or ""
                 acc_info["phone"] = f"+{me.phone}" if me.phone else "Скрыт"
                 acc_info["valid"] = True
+                
                 full_user = await client(GetFullUserRequest(me.id))
                 if full_user.full_user.premium_expires:
                     acc_info["premium"] = True
                     acc_info["premium_expires"] = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
+                
                 if me.phone: acc_info["country"] = "UA" if me.phone.startswith("380") else "RU" if me.phone.startswith("7") else "US"
+                
                 matching_proxies = [p for p in proxy_list if p["country"] == acc_info["country"]]
                 chosen_proxy = random.choice(matching_proxies) if matching_proxies else temp_proxy
                 acc_info["proxy"] = chosen_proxy["raw"]
@@ -184,15 +205,19 @@ async def process_proxies(message: Message, state: FSMContext):
         except Exception as e:
             print(f"ОШИБКА АККАУНТА {folder.name}: {e}")
             acc_info["username"] = f"Ошибка: {str(e)[:20]}"
-            await asyncio.sleep(1)
+            
         accounts.append(acc_info)
         save_json(ACCOUNTS_FILE, accounts)
+        
     await state.clear()
     web_app = WebAppInfo(url="https://lavrinuksasha5-prog.github.io/premium-bot-web/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Открыть панель", web_app=web_app)]], resize_keyboard=True)
     await message.answer(f"✅ Обработано аккаунтов: {len(accounts)}.\nОткрывай панель:", reply_markup=kb)
 
 async def main():
+    print("🚀 Запуск бота...")
+    
+    # Веб-сервер для WebApp
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
     app.router.add_get('/api/accounts', handle_get_accounts)
     app.router.add_get('/api/get_premium_link', handle_get_premium_link)
@@ -200,10 +225,21 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    
+    print(f"✅ Веб-сервер слушает порт {PORT}")
+
+    # Очистка вебхука
     await bot.delete_webhook(drop_pending_updates=True)
+    print("✅ Вебхук очищен, запускаю polling...")
     
+    # Запуск бота
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("Бот остановлен.")
+    except Exception as e:
+        print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        import traceback
+        traceback.print_exc()
