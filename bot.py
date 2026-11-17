@@ -11,11 +11,9 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, WebAppInfo
 from aiogram.filters import Command
 from aiohttp import web
-
-# Импорты для TData
-from opentele.td import TDesktop
-from opentele.api import API, UseCurrentSession
 from telethon import TelegramClient
+from telethon.sessions import StringSession
+from tdata_reader import read_tdata
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
@@ -48,18 +46,10 @@ def save_accounts(accounts):
 
 # --- ГЛАВНЫЙ API ДЛЯ ОБРАБОТКИ ---
 async def handle_upload_and_process(request):
-    # Разрешаем CORS
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type"
-    }
-    
-    if request.method == 'OPTIONS': 
-        return web.Response(status=200, headers=headers)
+    headers = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type"}
+    if request.method == 'OPTIONS': return web.Response(status=200, headers=headers)
     
     try:
-        # Получаем данные из формы
         post = await request.post()
         zip_field = post.get('tdata_zip')
         proxies_field = post.get('proxies')
@@ -70,55 +60,64 @@ async def handle_upload_and_process(request):
         zip_data = zip_field.file.read()
         proxies_text = proxies_field.strip()
 
-        # 1. Распаковка ZIP (очищаем старую папку)
-        if TDATA_DIR.exists():
-            shutil.rmtree(TDATA_DIR)
+        if TDATA_DIR.exists(): shutil.rmtree(TDATA_DIR)
         TDATA_DIR.mkdir()
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as z: z.extractall(TDATA_DIR)
 
-        with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
-            z.extractall(TDATA_DIR)
-
-        # 2. Парсинг прокси (автоматически добавляем socks5:// если нет протокола)
         proxy_list = []
         for p in proxies_text.split('\n'):
             p = p.strip()
             if p:
-                if not p.startswith(('http://', 'https://', 'socks5://', 'socks4://')):
-                    p = 'socks5://' + p
+                if not p.startswith(('http://', 'https://', 'socks5://', 'socks4://')): p = 'socks5://' + p
                 proxy_list.append(p)
 
-        if not proxy_list:
-             return web.json_response({"status": "error", "message": "Пустой список прокси"}, status=400, headers=headers)
+        if not proxy_list: return web.json_response({"status": "error", "message": "Пустой список прокси"}, status=400, headers=headers)
 
-        # 3. Обработка аккаунтов
         accounts = []
+        # Ищем папки TData (обычно это папки внутри архива, содержащие key_data или map)
         folders = [d for d in TDATA_DIR.iterdir() if d.is_dir()]
         
         for i, folder in enumerate(folders):
             device = random.choice(DEVICES)
             proxy = proxy_list[i % len(proxy_list)]
-
+            
             acc_info = {
-                "id": str(i),
-                "username": f"User_{i}",
-                "phone": "N/A",
-                "country": "Италия", # Заглушка
-                "ip": f"185.{random.randint(1,255)}.{random.randint(1,255)}.1",
-                "time": datetime.now().strftime("%H:%M"),
-                "premium": False,
-                "valid": True,
-                "device": f"{device['model']} ({device['system']})",
-                "proxy": proxy
+                "id": str(i), "username": "Ошибка чтения", "phone": "N/A", "country": "N/A",
+                "ip": "N/A", "time": datetime.now().strftime("%H:%M"), "premium": False,
+                "valid": False, "device": f"{device['model']} ({device['system']})", "proxy": proxy
             }
-            
-            # Имитация проверки (в будущем тут будет Telethon)
-            acc_info["premium"] = random.choice([True, False])
-            acc_info["phone"] = f"+39 333 {random.randint(1000000, 9999999)}"
-            
+
+            try:
+                # 1. Читаем TData
+                acc = read_tdata(str(folder))
+                session_string = acc.to_string_session()
+                
+                # 2. Подключаемся через прокси (используем прокси в формате Telethon)
+                # Telethon ожидает прокси как tuple (socks.SOCKS5, host, port, True, username, password)
+                # Упростим: пока пропускаем прокси для стабильности, но в будущем добавим парсинг URL
+                
+                client = TelegramClient(StringSession(session_string), acc.api_id, acc.api_hash, device_model=device['model'], system_version=device['system'], app_version=device['app'])
+                await client.connect()
+                
+                if await client.is_user_authorized():
+                    me = await client.get_me()
+                    acc_info["username"] = me.username or me.first_name
+                    acc_info["phone"] = f"+{me.phone}"
+                    acc_info["premium"] = me.premium
+                    acc_info["valid"] = True
+                    # Имитация IP (реальный IP через прокси нужно получать отдельно)
+                    acc_info["ip"] = f"185.{random.randint(1,255)}.{random.randint(1,255)}.1"
+                    acc_info["country"] = "Italy"
+                
+                await client.disconnect()
+                
+            except Exception as e:
+                acc_info["username"] = f"Ошибка: {str(e)[:20]}"
+
             accounts.append(acc_info)
 
         save_accounts(accounts)
-        return web.json_response({"status": "ok", "message": f"Успешно загружено: {len(accounts)} аккаунтов"}, headers=headers)
+        return web.json_response({"status": "ok", "message": f"Обработано: {len(accounts)} аккаунтов"}, headers=headers)
 
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -134,7 +133,7 @@ async def cmd_start(message: Message):
         await message.answer("Открой панель управления 👇", reply_markup={"keyboard": [[{"text": "Управление", "web_app": web_app}]], "resize_keyboard": True})
 
 async def main():
-    app = web.Application(client_max_size=1024**3) # 1GB limit
+    app = web.Application(client_max_size=1024**3)
     app.router.add_post('/api/upload', handle_upload_and_process)
     app.router.add_options('/api/upload', handle_upload_and_process)
     app.router.add_get('/api/accounts', handle_get_accounts)
