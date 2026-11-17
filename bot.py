@@ -65,16 +65,10 @@ def get_country_by_phone(phone):
     if phone.startswith("90"): return "TR"
     return "UNKNOWN"
 
-# --- КРАСИВОЕ ФОРМАТИРОВАНИЕ НОМЕРА ---
 def format_phone(phone_str):
     digits = ''.join(filter(str.isdigit, phone_str))
     if not digits: return phone_str
-    
-    # Если начинается с 0 (например, 090...), убираем его
-    if digits.startswith("0"): 
-        digits = digits[1:]
-    
-    # Красиво разбиваем
+    if digits.startswith("0"): digits = digits[1:]
     if len(digits) >= 11:
         return f"+{digits[0]} ({digits[1:4]}) {digits[4:7]}-{digits[7:9]}-{digits[9:11]}"
     elif len(digits) >= 10:
@@ -123,6 +117,18 @@ async def handle_index(request):
     if html_path.exists(): return web.FileResponse(html_path)
     return web.Response(text="Ошибка: index.html не найден", status=404)
 
+# --- ОБРАБОТКА КНОПКИ СМЕНЫ ПРОКСИ ---
+@dp.message(F.web_app_data)
+async def handle_web_app_data(message: Message):
+    try:
+        data = json.loads(message.web_app_data.data)
+        if data.get("action") == "change_proxy":
+            acc_id = data.get("acc_id")
+            user_states[message.from_user.id] = f"changing_proxy_{acc_id}"
+            await message.answer(f"Введи новый прокси для аккаунта {acc_id}:\nФормат: `socks5://user:pass@ip:port`")
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     user_states[message.from_user.id] = None
@@ -154,8 +160,36 @@ async def process_zip(message: Message):
 
 @dp.message(F.text)
 async def process_proxies(message: Message):
-    if user_states.get(message.from_user.id) != "waiting_proxies": return
-    user_states[message.from_user.id] = None
+    user_id = message.from_user.id
+    state = user_states.get(user_id)
+    
+    # 1. Если это смена прокси
+    if state and state.startswith("changing_proxy_"):
+        acc_id = state.replace("changing_proxy_", "")
+        new_proxy = message.text.strip()
+        
+        accounts = load_json(ACCOUNTS_FILE, [])
+        acc = next((a for a in accounts if a["id"] == acc_id), None)
+        
+        if acc:
+            ip = new_proxy.split('@')[-1].split(':')[0] if '@' in new_proxy else new_proxy.split(':')[0]
+            country = get_ip_country(ip)
+            
+            acc["proxy"] = new_proxy
+            acc["proxy_country"] = COUNTRY_NAMES.get(country, "Неизвестно")
+            acc["proxy_flag"] = FLAGS.get(country, "🏳️")
+            acc["ip"] = ip
+            
+            save_json(ACCOUNTS_FILE, accounts)
+            user_states[user_id] = None
+            await message.answer("✅ Прокси успешно изменен! Зайди в панель и обнови.")
+        else:
+            await message.answer("❌ Аккаунт не найден.")
+        return
+
+    # 2. Если это обработка нового архива
+    if state != "waiting_proxies": return
+    user_states[user_id] = None
     
     status_msg = await message.answer("⏳ Сканирую архив...")
     
@@ -175,7 +209,6 @@ async def process_proxies(message: Message):
             path_parts = root.split(os.sep)
             
             phone = "UNKNOWN"
-            # Ищем папку, похожую на номер
             for part in reversed(path_parts):
                 if part.isdigit() and len(part) > 7: 
                     phone = part
@@ -200,8 +233,6 @@ async def process_proxies(message: Message):
 
             unique_ip = f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
             device = get_sticky_device(phone)
-            
-            # Применяем красивое форматирование номера
             formatted_phone = format_phone(phone)
             
             found_accounts.append({
