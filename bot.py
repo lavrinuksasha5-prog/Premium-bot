@@ -47,7 +47,6 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
-# --- СЛОВАРИ СТРАН (РУССКИЙ) ---
 COUNTRY_NAMES = {
     "RU": "Россия", "UA": "Украина", "IT": "Италия", "DE": "Германия", 
     "FR": "Франция", "US": "США", "GB": "Великобритания", "ES": "Испания",
@@ -65,6 +64,25 @@ def get_country_by_phone(phone):
     if phone.startswith("33"): return "FR"
     if phone.startswith("90"): return "TR"
     return "UNKNOWN"
+
+# --- КРАСИВОЕ ФОРМАТИРОВАНИЕ НОМЕРА ---
+def format_phone(phone_str):
+    digits = ''.join(filter(str.isdigit, phone_str))
+    if not digits: return phone_str
+    
+    # Если начинается с 0 (например, 090...), убираем его
+    if digits.startswith("0"): 
+        digits = digits[1:]
+    
+    # Красиво разбиваем
+    if len(digits) >= 11:
+        return f"+{digits[0]} ({digits[1:4]}) {digits[4:7]}-{digits[7:9]}-{digits[9:11]}"
+    elif len(digits) >= 10:
+        return f"+{digits[0:2]} {digits[2:5]} {digits[5:8]} {digits[8:10]}"
+    elif len(digits) > 5:
+        return f"+{digits[0]} {digits[1:]}"
+    else:
+        return f"+{digits}"
 
 IPHONE_MODELS = ["iPhone 14 Pro", "iPhone 13", "iPhone 12", "iPhone 15"]
 ANDROID_MODELS = ["Samsung Galaxy S23", "Xiaomi 13 Pro", "Google Pixel 7"]
@@ -154,11 +172,17 @@ async def process_proxies(message: Message):
 
     for root, dirs, files in os.walk(WORK_DIR):
         if "key_d" in files or "key_datas" in files:
-            folder_name = os.path.basename(root)
+            path_parts = root.split(os.sep)
             
-            parent_dir = os.path.basename(os.path.dirname(root))
-            phone = parent_dir if parent_dir != "tdata" else folder_name
-            
+            phone = "UNKNOWN"
+            # Ищем папку, похожую на номер
+            for part in reversed(path_parts):
+                if part.isdigit() and len(part) > 7: 
+                    phone = part
+                    break
+                elif part not in ["tdata", "work", "data", "app"]:
+                    if phone == "UNKNOWN": phone = part
+
             if phone in processed_ids: continue
             
             acc_country = get_country_by_phone(phone)
@@ -171,18 +195,20 @@ async def process_proxies(message: Message):
 
             country_name = COUNTRY_NAMES.get(acc_country, "Неизвестно")
             flag = FLAGS.get(acc_country, "🏳️")
-            
             proxy_country_name = COUNTRY_NAMES.get(best_proxy["country"], "Неизвестно")
             proxy_flag = FLAGS.get(best_proxy["country"], "🏳️")
 
             unique_ip = f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
             device = get_sticky_device(phone)
             
+            # Применяем красивое форматирование номера
+            formatted_phone = format_phone(phone)
+            
             found_accounts.append({
                 "id": phone, 
-                "username": f"Аккаунт {phone}", 
+                "username": f"Аккаунт {formatted_phone}", 
                 "first_name": "", 
-                "phone": f"+{phone}", 
+                "phone": formatted_phone, 
                 "account_country": country_name, 
                 "flag": flag,
                 "proxy_country": proxy_country_name,
