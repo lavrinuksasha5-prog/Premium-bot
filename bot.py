@@ -47,12 +47,23 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
+# --- СЛОВАРИ СТРАН (РУССКИЙ) ---
+COUNTRY_NAMES = {
+    "RU": "Россия", "UA": "Украина", "IT": "Италия", "DE": "Германия", 
+    "FR": "Франция", "US": "США", "GB": "Великобритания", "ES": "Испания",
+    "PL": "Польша", "TR": "Турция", "KZ": "Казахстан", "UNKNOWN": "Неизвестно"
+}
+
+FLAGS = {"RU": "🇷🇺", "UA": "🇺🇦", "IT": "🇮🇹", "DE": "🇩🇪", "FR": "🇫🇷", "US": "🇺🇸", "GB": "🇬🇧", "ES": "🇪🇸", "PL": "🇵🇱", "TR": "🇹🇷", "KZ": "🇰🇿", "UNKNOWN": "🏳️"}
+
 def get_country_by_phone(phone):
+    phone = ''.join(filter(str.isdigit, phone))
     if phone.startswith("380"): return "UA"
     if phone.startswith("7"): return "RU"
     if phone.startswith("39"): return "IT"
     if phone.startswith("49"): return "DE"
     if phone.startswith("33"): return "FR"
+    if phone.startswith("90"): return "TR"
     return "UNKNOWN"
 
 IPHONE_MODELS = ["iPhone 14 Pro", "iPhone 13", "iPhone 12", "iPhone 15"]
@@ -119,7 +130,7 @@ async def process_zip(message: Message):
     
     try:
         with zipfile.ZipFile(TEMP_ZIP) as z: z.extractall(WORK_DIR)
-        await status_msg.edit_text("✅ Архив распакован. Теперь скинь прокси (можно 1, он размножится по стране).")
+        await status_msg.edit_text("✅ Архив распакован. Теперь скинь прокси.")
     except Exception as e: 
         await status_msg.edit_text(f"❌ Ошибка: {e}")
 
@@ -142,67 +153,40 @@ async def process_proxies(message: Message):
     processed_ids = set()
 
     for root, dirs, files in os.walk(WORK_DIR):
-        # 1. Ищем JSON с номером
-        for file in files:
-            if file.endswith(".json"):
-                acc_id = file.replace(".json", "")
-                if acc_id in processed_ids: continue
-                
-                phone = acc_id
-                acc_country = get_country_by_phone(phone)
-                
-                best_proxy = None
-                matching = [p for p in proxies if p["country"] == acc_country]
-                if matching: best_proxy = matching[0]
-                elif proxies: best_proxy = proxies[0]
-                else: best_proxy = {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
-
-                unique_ip = f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
-                device = get_sticky_device(acc_id)
-                
-                found_accounts.append({
-                    "id": acc_id, 
-                    "username": f"Аккаунт {phone}", 
-                    "first_name": "", 
-                    "phone": f"+{phone}", 
-                    "account_country": acc_country, 
-                    "proxy_country": best_proxy["country"], 
-                    "ip": unique_ip,
-                    "speed": best_proxy["speed"],
-                    "premium": False, 
-                    "premium_expires": "Нет", 
-                    "device": f"{device['model']} ({device['system']})", 
-                    "proxy": best_proxy["raw"]
-                })
-                processed_ids.add(acc_id)
-                
-        # 2. Если JSON нет, ищем папки (tdata)
         if "key_d" in files or "key_datas" in files:
             folder_name = os.path.basename(root)
-            if folder_name == "tdata":
-                folder_name = os.path.basename(os.path.dirname(root))
-                
-            if folder_name in processed_ids: continue
             
-            phone = folder_name
+            parent_dir = os.path.basename(os.path.dirname(root))
+            phone = parent_dir if parent_dir != "tdata" else folder_name
+            
+            if phone in processed_ids: continue
+            
             acc_country = get_country_by_phone(phone)
+            if acc_country == "UNKNOWN":
+                acc_country = proxies[0]["country"] if proxies else "UNKNOWN"
             
-            best_proxy = None
+            best_proxy = proxies[0] if proxies else {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
             matching = [p for p in proxies if p["country"] == acc_country]
             if matching: best_proxy = matching[0]
-            elif proxies: best_proxy = proxies[0]
-            else: best_proxy = {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
+
+            country_name = COUNTRY_NAMES.get(acc_country, "Неизвестно")
+            flag = FLAGS.get(acc_country, "🏳️")
+            
+            proxy_country_name = COUNTRY_NAMES.get(best_proxy["country"], "Неизвестно")
+            proxy_flag = FLAGS.get(best_proxy["country"], "🏳️")
 
             unique_ip = f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
-            device = get_sticky_device(folder_name)
+            device = get_sticky_device(phone)
             
             found_accounts.append({
-                "id": folder_name, 
+                "id": phone, 
                 "username": f"Аккаунт {phone}", 
                 "first_name": "", 
                 "phone": f"+{phone}", 
-                "account_country": acc_country, 
-                "proxy_country": best_proxy["country"], 
+                "account_country": country_name, 
+                "flag": flag,
+                "proxy_country": proxy_country_name,
+                "proxy_flag": proxy_flag,
                 "ip": unique_ip,
                 "speed": best_proxy["speed"],
                 "premium": False, 
@@ -210,7 +194,7 @@ async def process_proxies(message: Message):
                 "device": f"{device['model']} ({device['system']})", 
                 "proxy": best_proxy["raw"]
             })
-            processed_ids.add(folder_name)
+            processed_ids.add(phone)
 
     save_json(ACCOUNTS_FILE, found_accounts)
     
