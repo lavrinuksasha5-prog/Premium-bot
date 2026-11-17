@@ -23,6 +23,7 @@ dp = Dispatcher()
 data_dir = Path("/app/data")
 data_dir.mkdir(parents=True, exist_ok=True)
 ACCOUNTS_FILE = data_dir / "accounts.json"
+DEVICES_FILE = data_dir / "devices.json"
 WORK_DIR = data_dir / "work"
 WORK_DIR.mkdir(exist_ok=True)
 TEMP_ZIP = data_dir / "temp.zip"
@@ -38,6 +39,30 @@ def load_json(file_path, default):
 
 def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+
+# --- ГЕНЕРАТОР УСТРОЙСТВ (STICKY) ---
+IPHONE_MODELS = ["iPhone 14 Pro", "iPhone 13", "iPhone 12", "iPhone 15"]
+ANDROID_MODELS = ["Samsung Galaxy S23", "Xiaomi 13 Pro", "Google Pixel 7"]
+MAC_MODELS = ["MacBook Pro M2", "MacBook Air M1"]
+WIN_MODELS = ["Desktop", "Laptop"]
+APP_VERSIONS = ["9.6.0", "9.7.0", "10.0.0", "4.8.1"]
+
+def generate_unique_device():
+    platform = random.choice(["ios", "android", "mac", "win"])
+    if platform == "ios":
+        return {"model": random.choice(IPHONE_MODELS), "system": f"iOS {random.choice(['16.0', '16.1.1', '17.0'])}", "app": random.choice(APP_VERSIONS)}
+    elif platform == "android":
+        return {"model": random.choice(ANDROID_MODELS), "system": f"Android {random.choice(['12', '13', '14'])}", "app": random.choice(APP_VERSIONS)}
+    elif platform == "mac":
+        return {"model": random.choice(MAC_MODELS), "system": f"macOS {random.choice(['13.1', '14.0'])}", "app": random.choice(APP_VERSIONS)}
+    return {"model": random.choice(WIN_MODELS), "system": random.choice(["Windows 10", "Windows 11"]), "app": random.choice(APP_VERSIONS)}
+
+def get_sticky_device(acc_id):
+    devices = load_json(DEVICES_FILE, {})
+    if acc_id not in devices:
+        devices[acc_id] = generate_unique_device()
+        save_json(DEVICES_FILE, devices)
+    return devices[acc_id]
 
 def get_ip_country(ip):
     try:
@@ -60,7 +85,7 @@ async def handle_get_accounts(request):
 async def handle_index(request):
     html_path = Path(__file__).parent / "index.html"
     if html_path.exists(): return web.FileResponse(html_path)
-    return web.Response(text="Ошибка: файл index.html не найден", status=404)
+    return web.Response(text="Ошибка: index.html не найден", status=404)
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -76,11 +101,9 @@ async def start_work_btn(message: Message):
 @dp.message(F.document)
 async def process_zip(message: Message):
     if user_states.get(message.from_user.id) != "waiting_zip": return
-    if not message.document.file_name.endswith('.zip'): return await message.answer("Это не ZIP файл.")
+    if not message.document.file_name.endswith('.zip'): return await message.answer("Это не ZIP.")
     
     user_states[message.from_user.id] = "waiting_proxies"
-    
-    # Отправляем одно сообщение, которое будем редактировать
     status_msg = await message.answer("⏳ Скачиваю архив...")
     
     await bot.download(message.document, destination=TEMP_ZIP)
@@ -89,19 +112,18 @@ async def process_zip(message: Message):
     
     try:
         with zipfile.ZipFile(TEMP_ZIP) as z: z.extractall(WORK_DIR)
-        # Меняем текст в том же сообщении
-        await status_msg.edit_text("✅ Архив распакован. Теперь скинь список прокси текстом.")
+        await status_msg.edit_text("✅ Архив распакован. Теперь скинь прокси (можно 1, он размножится по стране).")
     except Exception as e: 
-        await status_msg.edit_text(f"❌ Ошибка распаковки: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
 
 @dp.message(F.text)
 async def process_proxies(message: Message):
     if user_states.get(message.from_user.id) != "waiting_proxies": return
     user_states[message.from_user.id] = None
     
-    # Отправляем новое сообщение со статусом, которое будем редактировать
-    status_msg = await message.answer("⏳ Сканирую архив и подбираю прокси...")
+    status_msg = await message.answer("⏳ Сканирую архив, подбираю прокси и IP...")
     
+    # Парсим прокси
     proxies = []
     for line in message.text.strip().split('\n'):
         line = line.strip()
@@ -113,25 +135,44 @@ async def process_proxies(message: Message):
     found_accounts = []
     
     for root, dirs, files in os.walk(WORK_DIR):
-        for file in files:
-            if file.endswith(".json"): pass
         if "key_d" in files or "key_datas" in files:
             folder_name = os.path.basename(root)
             
+            # Определяем страну аккаунта (заглушка по номеру)
             acc_country = "UNKNOWN"
             if folder_name.startswith("380"): acc_country = "UA"
             elif folder_name.startswith("7"): acc_country = "RU"
             elif folder_name.startswith("39"): acc_country = "IT"
             
-            best_proxy = proxies[0] if proxies else {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
+            # Гео-матчинг: ищем прокси для страны аккаунта
+            best_proxy = None
             matching = [p for p in proxies if p["country"] == acc_country]
+            
             if matching:
-                best_proxy = matching[0]
+                best_proxy = matching[0] # Берем первый подходящий
+            elif proxies:
+                best_proxy = proxies[0] # Если нет совпадений, берем любой
+            else:
+                best_proxy = {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
+
+            # Генерируем уникальный IP для каждого аккаунта (имитация ротации)
+            unique_ip = f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
+            
+            device = get_sticky_device(folder_name)
             
             found_accounts.append({
-                "id": folder_name, "username": f"Аккаунт {folder_name}", "first_name": "", "phone": folder_name, 
-                "account_country": acc_country, "proxy_country": best_proxy["country"], "speed": best_proxy["speed"],
-                "premium": False, "premium_expires": "Нет", "device": "iPhone 13 (TData)", "proxy": best_proxy["raw"]
+                "id": folder_name, 
+                "username": f"Аккаунт {folder_name}", 
+                "first_name": "", 
+                "phone": folder_name, 
+                "account_country": acc_country, 
+                "proxy_country": best_proxy["country"], 
+                "ip": unique_ip,  # <--- Уникальный IP
+                "speed": best_proxy["speed"],
+                "premium": False, 
+                "premium_expires": "Нет", 
+                "device": f"{device['model']} ({device['system']})", 
+                "proxy": best_proxy["raw"]
             })
 
     save_json(ACCOUNTS_FILE, found_accounts)
@@ -143,7 +184,6 @@ async def process_proxies(message: Message):
     web_app = WebAppInfo(url="https://worker-production-578b44ee.up.railway.app/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 Открыть панель", web_app=web_app)]], resize_keyboard=True)
     
-    # Редактируем то же сообщение на финальный результат
     await status_msg.edit_text(f"✅ Найдено аккаунтов: {len(found_accounts)}.\nОткрывай панель:", reply_markup=kb)
 
 async def main():
