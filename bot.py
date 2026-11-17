@@ -19,7 +19,7 @@ from aiohttp import web
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
-ADMIN_ID = 8720671692 
+ADMIN_ID = 8008361802 
 
 # Проверка токена при старте
 if not TOKEN:
