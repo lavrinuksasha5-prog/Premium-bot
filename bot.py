@@ -14,6 +14,12 @@ from aiogram.types import Message, WebAppInfo, ReplyKeyboardMarkup, KeyboardButt
 from aiogram.filters import Command
 from aiohttp import web
 
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+from telethon.tl.functions.users import GetFullUserRequest
+from tdata_reader import read_tdata
+from python_socks import ProxyType
+
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
 
@@ -47,13 +53,27 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
+# --- БОЛЬШОЙ СПИСОК СТРАН ---
 COUNTRY_NAMES = {
     "RU": "Россия", "UA": "Украина", "IT": "Италия", "DE": "Германия", 
     "FR": "Франция", "US": "США", "GB": "Великобритания", "ES": "Испания",
-    "PL": "Польша", "TR": "Турция", "KZ": "Казахстан", "UNKNOWN": "Неизвестно"
+    "PL": "Польша", "TR": "Турция", "KZ": "Казахстан", "BY": "Беларусь",
+    "NL": "Нидерланды", "SE": "Швеция", "NO": "Норвегия", "FI": "Финляндия",
+    "DK": "Дания", "CH": "Швейцария", "AT": "Австрия", "BE": "Бельгия",
+    "PT": "Португалия", "GR": "Греция", "CZ": "Чехия", "RO": "Румыния",
+    "BG": "Болгария", "HU": "Венгрия", "CA": "Канада", "AU": "Австралия",
+    "CN": "Китай", "JP": "Япония", "KR": "Корея", "IN": "Индия", "BR": "Бразилия",
+    "UNKNOWN": "Неизвестно"
 }
 
-FLAGS = {"RU": "🇷🇺", "UA": "🇺🇦", "IT": "🇮🇹", "DE": "🇩🇪", "FR": "🇫🇷", "US": "🇺🇸", "GB": "🇬🇧", "ES": "🇪🇸", "PL": "🇵🇱", "TR": "🇹🇷", "KZ": "🇰🇿", "UNKNOWN": "🏳️"}
+FLAGS = {
+    "RU": "🇷🇺", "UA": "🇺🇦", "IT": "🇮🇹", "DE": "🇩🇪", "FR": "🇫🇷", "US": "🇺🇸",
+    "GB": "🇬🇧", "ES": "🇪🇸", "PL": "🇵🇱", "TR": "🇹🇷", "KZ": "🇰🇿", "BY": "🇧🇾",
+    "NL": "🇳🇱", "SE": "🇸🇪", "NO": "🇳🇴", "FI": "🇫🇮", "DK": "🇩🇰", "CH": "🇨🇭",
+    "AT": "🇦🇹", "BE": "🇧🇪", "PT": "🇵🇹", "GR": "🇬🇷", "CZ": "🇨🇿", "RO": "🇷🇴",
+    "BG": "🇧🇬", "HU": "🇭🇺", "CA": "🇨🇦", "AU": "🇦🇺", "CN": "🇨🇳", "JP": "🇯🇵",
+    "KR": "🇰🇷", "IN": "🇮🇳", "BR": "🇧🇷", "UNKNOWN": "🏳️"
+}
 
 def get_country_by_phone(phone):
     phone = ''.join(filter(str.isdigit, phone))
@@ -63,14 +83,17 @@ def get_country_by_phone(phone):
     if phone.startswith("49"): return "DE"
     if phone.startswith("33"): return "FR"
     if phone.startswith("90"): return "TR"
+    if phone.startswith("375"): return "BY"
+    if phone.startswith("48"): return "PL"
     return "UNKNOWN"
 
+# Убрали эти сраные скобочки, теперь просто пробелы
 def format_phone(phone_str):
     digits = ''.join(filter(str.isdigit, phone_str))
     if not digits: return phone_str
     if digits.startswith("0"): digits = digits[1:]
     if len(digits) >= 11:
-        return f"+{digits[0]} ({digits[1:4]}) {digits[4:7]}-{digits[7:9]}-{digits[9:11]}"
+        return f"+{digits[0]} {digits[1:4]} {digits[4:7]}-{digits[7:9]}-{digits[9:11]}"
     elif len(digits) >= 10:
         return f"+{digits[0:2]} {digits[2:5]} {digits[5:8]} {digits[8:10]}"
     elif len(digits) > 5:
@@ -110,7 +133,9 @@ async def cors_middleware(request, handler):
     return response
 
 async def handle_get_accounts(request):
-    return web.json_response(load_json(ACCOUNTS_FILE, []))
+    response = web.json_response(load_json(ACCOUNTS_FILE, []))
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
 
 async def handle_update_proxy(request):
     try:
@@ -175,7 +200,7 @@ async def process_proxies(message: Message):
     if user_states.get(message.from_user.id) != "waiting_proxies": return
     user_states[message.from_user.id] = None
     
-    status_msg = await message.answer("⏳ Сканирую архив...")
+    status_msg = await message.answer("⏳ Подключаюсь к аккаунтам через TData. Жди...")
     
     proxies = []
     for line in message.text.strip().split('\n'):
@@ -203,35 +228,67 @@ async def process_proxies(message: Message):
             if phone in processed_ids: continue
             
             acc_country = get_country_by_phone(phone)
-            if acc_country == "UNKNOWN":
-                acc_country = proxies[0]["country"] if proxies else "UNKNOWN"
-            
             best_proxy = proxies[0] if proxies else {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
             matching = [p for p in proxies if p["country"] == acc_country]
             if matching: best_proxy = matching[0]
+
+            # --- РЕАЛЬНОЕ ПОДКЛЮЧЕНИЕ ---
+            username = f"Аккаунт {format_phone(phone)}" # По умолчанию
+            premium = False
+            premium_expires = "Нет"
+            
+            if best_proxy["raw"] != "Нет":
+                try:
+                    acc = read_tdata(root)
+                    session_string = acc.to_string_session()
+                    
+                    parsed = urlparse(best_proxy["raw"])
+                    p_type = ProxyType.SOCKS5 if parsed.scheme == 'socks5' else ProxyType.SOCKS4 if parsed.scheme == 'socks4' else ProxyType.HTTP
+                    proxy_tuple = (p_type, parsed.hostname, parsed.port, True, parsed.username, parsed.password)
+                    
+                    device = get_sticky_device(phone)
+                    
+                    client = TelegramClient(
+                        StringSession(session_string), acc.api_id, acc.api_hash, 
+                        device_model=device['model'], system_version=device['system'], 
+                        app_version=device['app'], proxy=proxy_tuple
+                    )
+                    
+                    await client.connect()
+                    
+                    if await client.is_user_authorized():
+                        me = await client.get_me()
+                        username = me.username or me.first_name or f"Аккаунт {format_phone(phone)}"
+                        
+                        full_user = await client(GetFullUserRequest(me.id))
+                        if full_user.full_user.premium_expires:
+                            premium = True
+                            premium_expires = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
+                    
+                    await client.disconnect()
+                except Exception as e:
+                    print(f"Ошибка подключения {phone}: {e}")
 
             country_name = COUNTRY_NAMES.get(acc_country, "Неизвестно")
             flag = FLAGS.get(acc_country, "🏳️")
             proxy_country_name = COUNTRY_NAMES.get(best_proxy["country"], "Неизвестно")
             proxy_flag = FLAGS.get(best_proxy["country"], "🏳️")
-
             unique_ip = f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
             device = get_sticky_device(phone)
-            formatted_phone = format_phone(phone)
             
             found_accounts.append({
                 "id": phone, 
-                "username": f"Аккаунт {formatted_phone}", 
+                "username": username, 
                 "first_name": "", 
-                "phone": formatted_phone, 
+                "phone": format_phone(phone), 
                 "account_country": country_name, 
                 "flag": flag,
                 "proxy_country": proxy_country_name,
                 "proxy_flag": proxy_flag,
                 "ip": unique_ip,
                 "speed": best_proxy["speed"],
-                "premium": False, 
-                "premium_expires": "Нет", 
+                "premium": premium, 
+                "premium_expires": premium_expires, 
                 "device": f"{device['model']} ({device['system']})", 
                 "proxy": best_proxy["raw"]
             })
@@ -246,7 +303,7 @@ async def process_proxies(message: Message):
     web_app = WebAppInfo(url="https://worker-production-578b44ee.up.railway.app/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 Открыть панель", web_app=web_app)]], resize_keyboard=True)
     
-    await status_msg.edit_text(f"✅ Найдено аккаунтов: {len(found_accounts)}.\nОткрывай панель:", reply_markup=kb)
+    await status_msg.edit_text(f"✅ Обработано: {len(found_accounts)}.\nОткрывай панель:", reply_markup=kb)
 
 async def main():
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
