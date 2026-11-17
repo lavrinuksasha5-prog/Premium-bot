@@ -34,7 +34,6 @@
         .btn-open { background: var(--btn); color: #fff; }
         .btn-reconnect { background: var(--warning); color: #fff; }
 
-        /* Модальное окно для ввода прокси */
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); justify-content: center; align-items: center; z-index: 100; }
         .modal-content { background: var(--card); padding: 20px; border-radius: 12px; width: 80%; max-width: 300px; }
         .modal input { width: 100%; padding: 10px; margin: 10px 0; border-radius: 8px; border: 1px solid var(--hint); background: var(--bg); color: var(--text); box-sizing: border-box; font-family: monospace;}
@@ -46,7 +45,6 @@
     <div class="header">💎 Менеджер</div>
     <div id="accounts-list"></div>
 
-    <!-- Модальное окно -->
     <div class="modal" id="proxyModal">
         <div class="modal-content">
             <h3>Сменить прокси</h3>
@@ -82,7 +80,6 @@
                     const statusClass = acc.status && acc.status.includes('✅') ? 'status-ok' : 'status-err';
                     const statusText = acc.status || 'Неизвестно';
 
-                    // Форматируем прокси для отображения
                     const proxyDisplay = acc.proxy && acc.proxy !== "Нет" ? acc.proxy.substring(0, 25) + "..." : "Не назначен";
                     
                     return `
@@ -171,18 +168,11 @@
                 if (data.status === 'ok') {
                     tg.showAlert("✅ Прокси обновлен!");
                     closeModal();
-                    // Мгновенно обновляем данные на карточке, не перезагружая страницу
                     document.getElementById('proxy-text-' + currentAccountId).innerText = newProxy.substring(0, 25) + "...";
                     
-                    // Обновляем страну и флаг на карточке
                     const card = document.getElementById('card-' + currentAccountId);
                     const proxyRow = card.querySelectorAll('.info-row')[1];
                     proxyRow.innerHTML = `<span class="info-label">🌍 Прокси:</span><span class="info-value">${data.proxy_flag} ${data.proxy_country} (⚡${data.speed} ms)</span>`;
-                    
-                    // Обновляем статус (если нужно)
-                    const statusBadge = card.querySelector('.status-badge');
-                    statusBadge.className = 'status-badge status-ok';
-                    statusBadge.innerText = '✅ Подключен';
                 } else {
                     tg.showAlert("Ошибка: " + data.message);
                 }
