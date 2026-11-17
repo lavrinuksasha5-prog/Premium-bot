@@ -21,7 +21,6 @@ TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
 ADMIN_ID = 8720671692 
 
-print("--- ЗАПУСК БОТА ---")
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -107,7 +106,6 @@ async def handle_get_premium_link(request):
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
-    print(f"ПОЛУЧЕНО /start от {message.from_user.id}")
     if message.from_user.id == ADMIN_ID:
         kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚀 Начать работу")]], resize_keyboard=True)
         await message.answer("Нажми на кнопку ниже 👇", reply_markup=kb)
@@ -195,7 +193,6 @@ async def process_proxies(message: Message, state: FSMContext):
     await message.answer(f"✅ Обработано аккаунтов: {len(accounts)}.\nОткрывай панель:", reply_markup=kb)
 
 async def main():
-    print("2. Запуск веб-сервера...")
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
     app.router.add_get('/api/accounts', handle_get_accounts)
     app.router.add_get('/api/get_premium_link', handle_get_premium_link)
@@ -203,13 +200,11 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    print(f"3. Веб-сервер на порту {PORT}")
-
-    print("4. Удаляю вебхук...")
+    
+    # Жесткий сброс вебхука и ожидающих обновлений
     await bot.delete_webhook(drop_pending_updates=True)
-    print("5. Запуск polling...")
+    
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    print("Запуск скрипта...")
     asyncio.run(main())
