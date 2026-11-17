@@ -60,7 +60,7 @@
     <div class="modal" id="proxyModal">
         <div class="modal-content">
             <h3>Сменить прокси</h3>
-            <input type="text" id="newProxyInput" placeholder="host:port:login:pass">
+            <input type="text" id="newProxyInput" placeholder="Любой формат (login:pass@host:port)">
             <div class="modal-actions">
                 <button class="modal-btn" style="background: var(--hint); color: #fff;" onclick="closeModal()">Отмена</button>
                 <button class="modal-btn" id="saveBtn" style="background: var(--success); color: #fff;" onclick="saveProxy()">Сохранить</button>
@@ -81,7 +81,7 @@
                 const listEl = document.getElementById('accounts-list');
                 
                 if (accounts.length === 0) {
-                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint); font-size:14px; margin-top:20px;'>Нет аккаунтов. Загрузи ZIP в боте.</div>";
+                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint); font-size:14px; margin-top:20px;'>Нет аккаунтов.</div>";
                     return;
                 }
                 
@@ -146,7 +146,7 @@
         function copyProxy(proxy) {
             if (!proxy || proxy === "Нет" || proxy === "Не назначен") return;
             navigator.clipboard.writeText(proxy).then(() => {
-                tg.showAlert("✅ Прокси скопирован в буфер!");
+                tg.showAlert("✅ Прокси скопирован!");
             }).catch(() => {
                 tg.showAlert("❌ Ошибка копирования");
             });
