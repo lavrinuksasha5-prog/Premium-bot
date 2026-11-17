@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Premium Manager</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root { --bg: var(--tg-theme-bg-color, #121212); --card: var(--tg-theme-secondary-bg-color, #1e1e1e); --text: var(--tg-theme-text-color, #fff); --hint: var(--tg-theme-hint-color, #888); --btn: var(--tg-theme-button-color, #2ea6ff); --success: #2ecc71; }
+        body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 16px; }
+        .card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.05); }
+        .header { font-size: 20px; font-weight: 700; margin-bottom: 16px; text-align: center; }
+        input[type="text"], input[type="file"] { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--card); background: var(--bg); color: var(--text); margin-bottom: 8px; box-sizing: border-box; }
+        .btn { width: 100%; padding: 14px; border: none; border-radius: 12px; font-weight: 700; font-size: 16px; cursor: pointer; margin-top: 10px; }
+        .btn-primary { background: var(--btn); color: #fff; }
+        .btn-buy { background: var(--success); color: #fff; padding: 8px; font-size: 14px; margin-top: 0; }
+        .account-row { display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; margin-bottom: 12px; }
+        .account-info { display: flex; justify-content: space-between; font-size: 14px; }
+        .status-ok { color: var(--success); }
+        .status-error { color: #e74c3c; }
+    </style>
+</head>
+<body>
+    <div class="header">💎 Premium Manager</div>
+    
+    <div class="card">
+        <div style="font-weight: 600; margin-bottom: 8px;">1. Загрузите ZIP с TData</div>
+        <input type="file" id="tdata-file" accept=".zip">
+        <div style="font-weight: 600; margin-bottom: 8px; margin-top: 12px;">2. Вставьте прокси (1 на всех)</div>
+        <input type="text" id="proxy-input" placeholder="socks5://user:pass@ip:port">
+        <button class="btn btn-primary" onclick="uploadData()">Загрузить и проверить</button>
+    </div>
+
+    <div id="accounts-list"></div>
+
+    <script>
+        const tg = window.Telegram.WebApp; tg.expand();
+        const API_URL = "https://твой-новый-домен.up.railway.app"; // ЗАМЕНИТЬ
+
+        async function uploadData() {
+            tg.showAlert("Загрузка и проверка аккаунтов... (Функция в разработке)");
+            // Логика отправки ZIP и прокси на сервер
+        }
+
+        async function fetchAccounts() {
+            try {
+                const res = await fetch(`${API_URL}/api/accounts`);
+                const accounts = await res.json();
+                const listEl = document.getElementById('accounts-list');
+                
+                if (accounts.length === 0) {
+                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint);'>Нет аккаунтов</div>";
+                    return;
+                }
+
+                listEl.innerHTML = accounts.map(acc => `
+                    <div class="card account-row">
+                        <div class="account-info">
+                            <div><b>${acc.username || 'Аккаунт'}</b></div>
+                            <div class="${acc.valid ? 'status-ok' : 'status-error'}">${acc.valid ? 'Валиден' : 'Ошибка'}</div>
+                        </div>
+                        <div style="font-size: 12px; color: var(--hint);">IP: ${acc.ip || 'N/A'}</div>
+                        <div style="font-size: 12px; color: var(--hint);">Устройство: ${acc.device || 'N/A'}</div>
+                        <button class="btn btn-buy" onclick="buyPremium('${acc.id}')">Купить Premium</button>
+                    </div>
+                `).join("");
+            } catch (e) { console.error(e); }
+        }
+
+        function buyPremium(accountId) {
+            tg.showAlert("Открываю окно оплаты...");
+            // Логика запроса к боту для получения ссылки на оплату
+        }
+
+        document.addEventListener('DOMContentLoaded', fetchAccounts);
+    </script>
+</body>
+</html>
