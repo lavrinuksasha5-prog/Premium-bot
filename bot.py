@@ -209,7 +209,7 @@ async def process_proxies(message: Message, state: FSMContext):
         accounts.append(acc_info)
         save_json(ACCOUNTS_FILE, accounts)
         
-    web_app = WebAppInfo(url="https://lavrinuksasha5-prog.github.io/premium-bot-web/")
+    web_app = WebAppInfo(url="https://lavrinuksasha5-prog.github.io/Premium-bot/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Открыть панель", web_app=web_app)]], resize_keyboard=True)
     await msg.edit_text(f"✅ Обработано аккаунтов: {len(accounts)}.\nОткрывай панель:", reply_markup=kb)
 
