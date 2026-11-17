@@ -6,4 +6,3 @@ cryptg
 python-socks[asyncio]
 python-multipart
 requests
-PySocks
