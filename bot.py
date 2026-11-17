@@ -19,12 +19,6 @@ from aiohttp import web
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
-ADMIN_ID = 8008361802 
-
-# Проверка токена при старте
-if not TOKEN:
-    print("❌ ОШИБКА: Переменная BOT_TOKEN не задана в Railway!")
-    exit(1)
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -41,6 +35,7 @@ class UploadStates(StatesGroup):
     waiting_zip = State()
     waiting_proxies = State()
 
+# Генератор устройств
 IPHONE_MODELS = ["iPhone 14 Pro", "iPhone 13", "iPhone 12", "iPhone 15"]
 ANDROID_MODELS = ["Samsung Galaxy S23", "Xiaomi 13 Pro", "Google Pixel 7"]
 MAC_MODELS = ["MacBook Pro M2", "MacBook Air M1"]
@@ -91,7 +86,7 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
-# --- ВЕБ-СЕРВЕР (CORS) ---
+# --- API ---
 @web.middleware
 async def cors_middleware(request, handler):
     if request.method == 'OPTIONS':
@@ -110,16 +105,16 @@ async def handle_get_premium_link(request):
     if not acc: return web.json_response({"status": "error", "message": "Не найден"}, status=404)
     return web.json_response({"status": "ok", "premium_url": "https://t.me/PremiumBot", "proxy": acc.get("proxy", "Нет"), "country": acc.get("proxy_country", "UNKNOWN")})
 
-# --- БОТ ---
+# --- BOT HANDLERS ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
-    print(f"ПОЛУЧЕНО /START от {message.from_user.id}")
-    if message.from_user.id == ADMIN_ID:
-        kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚀 Начать работу")]], resize_keyboard=True)
-        await message.answer("Нажми на кнопку ниже 👇", reply_markup=kb)
+    await state.clear() # Сбрасываем старые состояния
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚀 Начать работу")]], resize_keyboard=True)
+    await message.answer("Нажми на кнопку ниже 👇", reply_markup=kb)
 
 @dp.message(F.text == "🚀 Начать работу")
 async def start_work_btn(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer("Скинь ZIP-архив с папками TData.", reply_markup=ReplyKeyboardRemove())
     await state.set_state(UploadStates.waiting_zip)
 
@@ -127,29 +122,35 @@ async def start_work_btn(message: Message, state: FSMContext):
 async def process_zip(message: Message, state: FSMContext):
     if not message.document.file_name.endswith('.zip'): 
         return await message.answer("Это не ZIP файл.")
-    await message.answer("⏳ Скачиваю архив...")
+    
+    # Убираем состояние ожидания ZIP, чтобы не срабатывало дважды
+    await state.clear() 
+    msg = await message.answer("⏳ Скачиваю архив...")
+    
     await bot.download(message.document, destination=TEMP_ZIP)
     if TDATA_DIR.exists(): shutil.rmtree(TDATA_DIR)
     TDATA_DIR.mkdir()
     try:
         with zipfile.ZipFile(TEMP_ZIP) as z: z.extractall(TDATA_DIR)
+        await msg.edit_text("✅ Архив распакован. Теперь скинь список прокси текстом.")
+        await state.set_state(UploadStates.waiting_proxies)
     except Exception as e: 
-        return await message.answer(f"❌ Ошибка распаковки: {e}")
-    await state.set_state(UploadStates.waiting_proxies)
-    await message.answer("✅ Архив распакован. Теперь скинь список прокси текстом.")
+        await msg.edit_text(f"❌ Ошибка распаковки: {e}")
 
 @dp.message(UploadStates.waiting_proxies, F.text)
 async def process_proxies(message: Message, state: FSMContext):
+    await state.clear() # СРАЗУ сбрасываем, чтобы сообщение не дублировалось
+    msg = await message.answer("⏳ Начинаю обработку. Буду делать паузы. Жди...")
+    
     try:
         from telethon import TelegramClient
         from telethon.sessions import StringSession
         from telethon.tl.functions.users import GetFullUserRequest
         from tdata_reader import read_tdata
     except ImportError as e:
-        return await message.answer(f"❌ Ошибка импорта библиотек: {e}\nПроверь requirements.txt")
+        return await msg.edit_text(f"❌ Ошибка импорта библиотек: {e}")
 
     proxies_text = message.text.strip()
-    await message.answer("⏳ Начинаю обработку. Буду делать паузы. Жди...")
     proxy_list = []
     for p_raw in proxies_text.split('\n'):
         p_raw = p_raw.strip()
@@ -158,8 +159,7 @@ async def process_proxies(message: Message, state: FSMContext):
         proxy_list.append({"raw": p_str, "tuple": p_tuple, "country": get_ip_country(p_ip)})
     
     if not proxy_list:
-        await state.clear()
-        return await message.answer("❌ Список прокси пуст. Начни заново /start")
+        return await msg.edit_text("❌ Список прокси пуст. Начни заново /start")
         
     accounts = []
     folders = [d for d in TDATA_DIR.iterdir() if d.is_dir()]
@@ -169,7 +169,7 @@ async def process_proxies(message: Message, state: FSMContext):
         device = get_sticky_device(acc_id)
         acc_info = {"id": acc_id, "username": "Ошибка", "first_name": "", "phone": "N/A", "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", "time": datetime.now().strftime("%H:%M"), "premium": False, "premium_expires": "Нет", "valid": False, "device": f"{device['model']} ({device['system']})", "proxy": "Нет"}
         
-        await asyncio.sleep(random.uniform(2.0, 5.0)) # Пауза для анти-бана
+        await asyncio.sleep(random.uniform(2.0, 5.0))
         
         try:
             acc = read_tdata(str(folder))
@@ -209,15 +209,11 @@ async def process_proxies(message: Message, state: FSMContext):
         accounts.append(acc_info)
         save_json(ACCOUNTS_FILE, accounts)
         
-    await state.clear()
     web_app = WebAppInfo(url="https://lavrinuksasha5-prog.github.io/premium-bot-web/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Открыть панель", web_app=web_app)]], resize_keyboard=True)
-    await message.answer(f"✅ Обработано аккаунтов: {len(accounts)}.\nОткрывай панель:", reply_markup=kb)
+    await msg.edit_text(f"✅ Обработано аккаунтов: {len(accounts)}.\nОткрывай панель:", reply_markup=kb)
 
 async def main():
-    print("🚀 Запуск бота...")
-    
-    # Веб-сервер для WebApp
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
     app.router.add_get('/api/accounts', handle_get_accounts)
     app.router.add_get('/api/get_premium_link', handle_get_premium_link)
@@ -225,21 +221,9 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', PORT)
     await site.start()
-    print(f"✅ Веб-сервер слушает порт {PORT}")
-
-    # Очистка вебхука
-    await bot.delete_webhook(drop_pending_updates=True)
-    print("✅ Вебхук очищен, запускаю polling...")
     
-    # Запуск бота
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("Бот остановлен.")
-    except Exception as e:
-        print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        import traceback
-        traceback.print_exc()
+    asyncio.run(main())
