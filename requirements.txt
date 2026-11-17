@@ -1,0 +1,6 @@
+aiogram
+aiohttp
+opentele
+telethon
+pyrogram
+pyrogram-storage
