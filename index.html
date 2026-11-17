@@ -6,34 +6,62 @@
     <title>Premium Manager</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        :root { --bg: var(--tg-theme-bg-color, #121212); --card: var(--tg-theme-secondary-bg-color, #1e1e1e); --text: var(--tg-theme-text-color, #fff); --hint: var(--tg-theme-hint-color, #888); --success: #2ecc71; --danger: #e74c3c; --btn: var(--tg-theme-button-color, #2ea6ff); }
+        :root { --bg: var(--tg-theme-bg-color, #121212); --card: var(--tg-theme-secondary-bg-color, #1e1e1e); --text: var(--tg-theme-text-color, #fff); --hint: var(--tg-theme-hint-color, #888); --success: #2ecc71; --danger: #e74c3c; --btn: var(--tg-theme-button-color, #2ea6ff); --warning: #f39c12; }
         body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 8px; }
         .header { font-size: 18px; font-weight: 700; margin-bottom: 12px; text-align: center; }
         
         .card { background: var(--card); border-radius: 12px; padding: 10px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05); display: flex; flex-direction: column; gap: 6px; }
         
-        .row-top { display: flex; justify-content: space-between; align-items: center; }
-        .acc-name { font-weight: 700; font-size: 14px; }
-        .acc-phone { font-size: 12px; color: var(--hint); }
+        .row-top { display: flex; justify-content: space-between; align-items: flex-start; }
+        .acc-name { font-weight: 700; font-size: 15px; margin-bottom: 2px; }
+        .acc-phone { font-size: 13px; color: var(--hint); }
         
-        .info-row { display: flex; justify-content: space-between; font-size: 11px; color: var(--hint); padding: 2px 0; }
+        .status-badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+        .status-ok { background: rgba(46, 204, 113, 0.2); color: var(--success); }
+        .status-err { background: rgba(231, 76, 60, 0.2); color: var(--danger); }
         
-        .actions { display: flex; gap: 6px; margin-top: 4px; }
+        .info-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--hint); padding: 3px 0; border-bottom: 1px dashed rgba(255,255,255,0.05); }
+        .info-row:last-child { border-bottom: none; }
+        .info-label { color: var(--hint); }
+        .info-value { color: var(--text); font-weight: 500; }
+        
+        .proxy-box { background: rgba(0,0,0,0.2); padding: 6px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-family: monospace; font-size: 11px; cursor: pointer; }
+        .proxy-box:active { background: rgba(0,0,0,0.4); }
+        
+        .actions { display: flex; gap: 6px; margin-top: 6px; }
         .btn-action { flex: 1; padding: 8px; border: none; border-radius: 8px; font-weight: 700; font-size: 12px; cursor: pointer; text-align: center; }
         .btn-buy { background: var(--success); color: #fff; }
         .btn-open { background: var(--btn); color: #fff; }
-        .btn-reconnect { background: #f39c12; color: #fff; }
-        
-        .prem-yes { color: var(--success); font-weight: 700; }
-        .prem-no { color: var(--danger); font-weight: 700; }
+        .btn-reconnect { background: var(--warning); color: #fff; }
+
+        /* Модальное окно для ввода прокси */
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); justify-content: center; align-items: center; z-index: 100; }
+        .modal-content { background: var(--card); padding: 20px; border-radius: 12px; width: 80%; max-width: 300px; }
+        .modal input { width: 100%; padding: 10px; margin: 10px 0; border-radius: 8px; border: 1px solid var(--hint); background: var(--bg); color: var(--text); box-sizing: border-box; font-family: monospace;}
+        .modal-actions { display: flex; gap: 8px; margin-top: 10px; }
+        .modal-btn { flex: 1; padding: 10px; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
     </style>
 </head>
 <body>
     <div class="header">💎 Менеджер</div>
     <div id="accounts-list"></div>
+
+    <!-- Модальное окно -->
+    <div class="modal" id="proxyModal">
+        <div class="modal-content">
+            <h3>Сменить прокси</h3>
+            <input type="text" id="newProxyInput" placeholder="socks5://user:pass@ip:port">
+            <div class="modal-actions">
+                <button class="modal-btn" style="background: var(--hint); color: #fff;" onclick="closeModal()">Отмена</button>
+                <button class="modal-btn" style="background: var(--success); color: #fff;" onclick="saveProxy()">Сохранить</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const tg = window.Telegram.WebApp; tg.expand();
         const API_URL = window.location.origin; 
+        let currentAccountId = null;
 
         async function fetchAccounts() {
             try {
@@ -49,43 +77,120 @@
                 
                 listEl.innerHTML = accounts.map(acc => {
                     const premText = acc.premium ? `Premium до ${acc.premium_expires}` : 'Нет Premium';
-                    const premClass = acc.premium ? 'prem-yes' : 'prem-no';
+                    const premColor = acc.premium ? 'var(--success)' : 'var(--danger)';
+                    
+                    const statusClass = acc.status && acc.status.includes('✅') ? 'status-ok' : 'status-err';
+                    const statusText = acc.status || 'Неизвестно';
+
+                    // Форматируем прокси для отображения
+                    const proxyDisplay = acc.proxy && acc.proxy !== "Нет" ? acc.proxy.substring(0, 25) + "..." : "Не назначен";
                     
                     return `
-                    <div class="card">
+                    <div class="card" id="card-${acc.id}">
                         <div class="row-top">
                             <div>
                                 <div class="acc-name">${acc.username}</div>
                                 <div class="acc-phone">${acc.phone}</div>
                             </div>
-                            <div class="${premClass}" style="font-size:11px;">${premText}</div>
+                            <div class="status-badge ${statusClass}">${statusText}</div>
                         </div>
                         
-                        <div style="display: flex; flex-direction: column; gap: 4px; font-size: 11px; margin-top: 4px;">
+                        <div style="display: flex; flex-direction: column; gap: 2px; margin-top: 4px;">
                             <div class="info-row">
-                                <span>📱 Аккаунт:</span>
-                                <span>${acc.flag || '🏳️'} ${acc.account_country || 'Неизвестно'}</span>
+                                <span class="info-label">📱 Страна:</span>
+                                <span class="info-value">${acc.flag || '🏳️'} ${acc.account_country || 'Неизвестно'}</span>
                             </div>
                             <div class="info-row">
-                                <span>🌍 Прокси:</span>
-                                <span>${acc.proxy_flag || '🏳️'} ${acc.proxy_country || 'Неизвестно'} (⚡${acc.speed} ms)</span>
+                                <span class="info-label">🌍 Прокси:</span>
+                                <span class="info-value">${acc.proxy_flag || '🏳️'} ${acc.proxy_country || 'Неизвестно'} (⚡${acc.speed} ms)</span>
                             </div>
                             <div class="info-row">
-                                <span>📱 Устройство:</span>
-                                <span>${acc.device || 'N/A'}</span>
+                                <span class="info-label">💎 Premium:</span>
+                                <span class="info-value" style="color: ${premColor};">${premText}</span>
                             </div>
+                            <div class="info-row">
+                                <span class="info-label">📱 Устройство:</span>
+                                <span class="info-value">${acc.device || 'N/A'}</span>
+                            </div>
+                        </div>
+
+                        <div class="proxy-box" onclick="copyProxy('${acc.proxy}')">
+                            <span id="proxy-text-${acc.id}">${proxyDisplay}</span>
+                            <span style="color: var(--hint);">📋</span>
                         </div>
 
                         <div class="actions">
                             <button class="btn-action btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить</button>
                             <button class="btn-action btn-open" onclick="openBot('${acc.username}')">📱 Открыть</button>
-                            <button class="btn-action btn-reconnect" onclick="changeProxy('${acc.id}')">🔄 Прокси</button>
+                            <button class="btn-action btn-reconnect" onclick="openModal('${acc.id}')">🔄 Прокси</button>
                         </div>
                     </div>
                     `;
                 }).join("");
             } catch (e) { 
                 document.getElementById('accounts-list').innerHTML = `<div style='text-align:center; color:var(--danger);'>${e.message}</div>`;
+            }
+        }
+
+        function copyProxy(proxy) {
+            if (!proxy || proxy === "Нет") return;
+            navigator.clipboard.writeText(proxy).then(() => {
+                tg.showAlert("✅ Прокси скопирован в буфер обмена!");
+            }).catch(() => {
+                tg.showAlert("❌ Не удалось скопировать");
+            });
+        }
+
+        function openModal(accountId) {
+            currentAccountId = accountId;
+            document.getElementById('newProxyInput').value = "";
+            document.getElementById('proxyModal').style.display = 'flex';
+        }
+
+        function closeModal() {
+            document.getElementById('proxyModal').style.display = 'none';
+            currentAccountId = null;
+        }
+
+        async function saveProxy() {
+            const newProxy = document.getElementById('newProxyInput').value.trim();
+            if (!newProxy) return tg.showAlert("Введите прокси");
+
+            const btn = document.querySelector('.modal-btn:nth-child(2)');
+            btn.innerText = "...";
+            btn.disabled = true;
+
+            try {
+                const res = await fetch(`${API_URL}/api/update_proxy`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ account_id: currentAccountId, new_proxy: newProxy })
+                });
+                
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    tg.showAlert("✅ Прокси обновлен!");
+                    closeModal();
+                    // Мгновенно обновляем данные на карточке, не перезагружая страницу
+                    document.getElementById('proxy-text-' + currentAccountId).innerText = newProxy.substring(0, 25) + "...";
+                    
+                    // Обновляем страну и флаг на карточке
+                    const card = document.getElementById('card-' + currentAccountId);
+                    const proxyRow = card.querySelectorAll('.info-row')[1];
+                    proxyRow.innerHTML = `<span class="info-label">🌍 Прокси:</span><span class="info-value">${data.proxy_flag} ${data.proxy_country} (⚡${data.speed} ms)</span>`;
+                    
+                    // Обновляем статус (если нужно)
+                    const statusBadge = card.querySelector('.status-badge');
+                    statusBadge.className = 'status-badge status-ok';
+                    statusBadge.innerText = '✅ Подключен';
+                } else {
+                    tg.showAlert("Ошибка: " + data.message);
+                }
+            } catch (e) {
+                tg.showAlert("Ошибка соединения: " + e.message);
+            } finally {
+                btn.innerText = "Сохранить";
+                btn.disabled = false;
             }
         }
 
@@ -100,31 +205,12 @@
         }
 
         function openBot(username) {
+            if (!username || username.startsWith('Аккаунт')) {
+                tg.showAlert("У этого аккаунта нет юзернейма");
+                return;
+            }
             const link = `https://t.me/${username}`;
             tg.openLink(link);
-        }
-
-        async function changeProxy(accountId) {
-            const newProxy = prompt("Введите новый прокси (формат: socks5://user:pass@ip:port):");
-            if (!newProxy) return;
-
-            try {
-                const res = await fetch(`${API_URL}/api/update_proxy`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ account_id: accountId, new_proxy: newProxy })
-                });
-                
-                const data = await res.json();
-                if (data.status === 'ok') {
-                    tg.showAlert("✅ Прокси обновлен!");
-                    window.location.reload(); 
-                } else {
-                    tg.showAlert("Ошибка: " + data.message);
-                }
-            } catch (e) {
-                tg.showAlert("Ошибка соединения: " + e.message);
-            }
         }
 
         document.addEventListener('DOMContentLoaded', () => { fetchAccounts(); });
