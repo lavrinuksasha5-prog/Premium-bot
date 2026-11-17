@@ -6,52 +6,66 @@
     <title>Premium Manager</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        :root { --bg: var(--tg-theme-bg-color, #121212); --card: var(--tg-theme-secondary-bg-color, #1e1e1e); --text: var(--tg-theme-text-color, #fff); --hint: var(--tg-theme-hint-color, #888); --success: #2ecc71; --danger: #e74c3c; --btn: var(--tg-theme-button-color, #2ea6ff); --warning: #f39c12; }
+        :root { 
+            --bg: var(--tg-theme-bg-color, #121212); 
+            --card: var(--tg-theme-secondary-bg-color, #1e1e1e); 
+            --text: var(--tg-theme-text-color, #fff); 
+            --hint: var(--tg-theme-hint-color, #888); 
+            --success: #2ecc71; 
+            --danger: #e74c3c; 
+            --btn: var(--tg-theme-button-color, #2ea6ff); 
+            --warning: #f39c12; 
+        }
         body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 8px; }
         .header { font-size: 18px; font-weight: 700; margin-bottom: 12px; text-align: center; }
         
-        .card { background: var(--card); border-radius: 12px; padding: 10px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05); display: flex; flex-direction: column; gap: 6px; }
+        .card { background: var(--card); border-radius: 12px; padding: 12px; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.05); display: flex; flex-direction: column; gap: 8px; }
         
-        .row-top { display: flex; justify-content: space-between; align-items: flex-start; }
-        .acc-name { font-weight: 700; font-size: 15px; margin-bottom: 2px; }
-        .acc-phone { font-size: 13px; color: var(--hint); }
+        .card-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px; margin-bottom: 4px; }
+        .acc-info { display: flex; flex-direction: column; overflow: hidden; }
+        .acc-name { font-weight: 700; font-size: 15px; color: var(--text); text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+        .acc-phone { font-size: 12px; color: var(--hint); }
         
-        .status-badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
-        .status-ok { background: rgba(46, 204, 113, 0.2); color: var(--success); }
-        .status-err { background: rgba(231, 76, 60, 0.2); color: var(--danger); }
+        .badge { font-size: 10px; padding: 3px 8px; border-radius: 6px; font-weight: 700; }
+        .badge-ok { background: rgba(46, 204, 113, 0.2); color: var(--success); }
+        .badge-err { background: rgba(231, 76, 60, 0.2); color: var(--danger); }
         
-        .info-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--hint); padding: 3px 0; border-bottom: 1px dashed rgba(255,255,255,0.05); }
-        .info-row:last-child { border-bottom: none; }
-        .info-label { color: var(--hint); }
-        .info-value { color: var(--text); font-weight: 500; }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px; }
+        .info-item { display: flex; flex-direction: column; background: rgba(255,255,255,0.03); padding: 6px; border-radius: 6px; }
+        .info-label { color: var(--hint); font-size: 10px; text-transform: uppercase; margin-bottom: 2px; }
+        .info-value { color: var(--text); font-weight: 500; word-break: break-word; }
         
-        .proxy-box { background: rgba(0,0,0,0.2); padding: 6px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; margin-top: 4px; font-family: monospace; font-size: 11px; cursor: pointer; }
-        .proxy-box:active { background: rgba(0,0,0,0.4); }
+        .proxy-box { background: rgba(0,0,0,0.3); padding: 8px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; font-family: monospace; font-size: 11px; cursor: pointer; }
+        .proxy-box:active { background: rgba(0,0,0,0.5); }
+        .proxy-text { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; margin-right: 8px; }
         
-        .actions { display: flex; gap: 6px; margin-top: 6px; }
-        .btn-action { flex: 1; padding: 8px; border: none; border-radius: 8px; font-weight: 700; font-size: 12px; cursor: pointer; text-align: center; }
+        .actions { display: flex; gap: 6px; margin-top: 4px; }
+        .btn-action { flex: 1; padding: 10px 4px; border: none; border-radius: 8px; font-weight: 700; font-size: 11px; cursor: pointer; text-align: center; display: flex; justify-content: center; align-items: center; gap: 4px; }
         .btn-buy { background: var(--success); color: #fff; }
         .btn-open { background: var(--btn); color: #fff; }
         .btn-reconnect { background: var(--warning); color: #fff; }
 
+        /* Модальное окно */
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); justify-content: center; align-items: center; z-index: 100; }
-        .modal-content { background: var(--card); padding: 20px; border-radius: 12px; width: 80%; max-width: 300px; }
-        .modal input { width: 100%; padding: 10px; margin: 10px 0; border-radius: 8px; border: 1px solid var(--hint); background: var(--bg); color: var(--text); box-sizing: border-box; font-family: monospace;}
-        .modal-actions { display: flex; gap: 8px; margin-top: 10px; }
-        .modal-btn { flex: 1; padding: 10px; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; }
+        .modal-content { background: var(--card); padding: 20px; border-radius: 12px; width: 85%; max-width: 320px; }
+        .modal-content h3 { margin-top: 0; margin-bottom: 12px; font-size: 16px; }
+        .modal input { width: 100%; padding: 12px; margin-bottom: 12px; border-radius: 8px; border: 1px solid var(--hint); background: var(--bg); color: var(--text); box-sizing: border-box; font-family: monospace; font-size: 12px;}
+        .modal-actions { display: flex; gap: 8px; }
+        .modal-btn { flex: 1; padding: 12px; border: none; border-radius: 8px; font-weight: 700; font-size: 13px; cursor: pointer; }
     </style>
 </head>
 <body>
     <div class="header">💎 Менеджер</div>
     <div id="accounts-list"></div>
 
+    <!-- Модальное окно -->
     <div class="modal" id="proxyModal">
         <div class="modal-content">
             <h3>Сменить прокси</h3>
             <input type="text" id="newProxyInput" placeholder="socks5://user:pass@ip:port">
             <div class="modal-actions">
                 <button class="modal-btn" style="background: var(--hint); color: #fff;" onclick="closeModal()">Отмена</button>
-                <button class="modal-btn" style="background: var(--success); color: #fff;" onclick="saveProxy()">Сохранить</button>
+                <button class="modal-btn" id="saveBtn" style="background: var(--success); color: #fff;" onclick="saveProxy()">Сохранить</button>
             </div>
         </div>
     </div>
@@ -69,50 +83,52 @@
                 const listEl = document.getElementById('accounts-list');
                 
                 if (accounts.length === 0) {
-                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint); font-size:14px; margin-top:20px;'>Нет аккаунтов. Загрузи архив в боте.</div>";
+                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint); font-size:14px; margin-top:20px;'>Нет аккаунтов. Загрузи ZIP в боте.</div>";
                     return;
                 }
                 
                 listEl.innerHTML = accounts.map(acc => {
-                    const premText = acc.premium ? `Premium до ${acc.premium_expires}` : 'Нет Premium';
-                    const premColor = acc.premium ? 'var(--success)' : 'var(--danger)';
+                    const isPremium = acc.premium;
+                    const premText = isPremium ? `До ${acc.premium_expires}` : 'Нет Premium';
+                    const premColor = isPremium ? 'var(--success)' : 'var(--danger)';
                     
-                    const statusClass = acc.status && acc.status.includes('✅') ? 'status-ok' : 'status-err';
-                    const statusText = acc.status || 'Неизвестно';
+                    const isConnected = acc.status && acc.status.includes('✅');
+                    const statusClass = isConnected ? 'badge-ok' : 'badge-err';
+                    const statusText = isConnected ? 'ONLINE' : 'ERROR';
 
-                    const proxyDisplay = acc.proxy && acc.proxy !== "Нет" ? acc.proxy.substring(0, 25) + "..." : "Не назначен";
+                    const proxyDisplay = acc.proxy && acc.proxy !== "Нет" ? acc.proxy : "Не назначен";
                     
                     return `
                     <div class="card" id="card-${acc.id}">
-                        <div class="row-top">
-                            <div>
+                        <div class="card-header">
+                            <div class="acc-info">
                                 <div class="acc-name">${acc.username}</div>
                                 <div class="acc-phone">${acc.phone}</div>
                             </div>
-                            <div class="status-badge ${statusClass}">${statusText}</div>
+                            <div class="badge ${statusClass}">${statusText}</div>
                         </div>
                         
-                        <div style="display: flex; flex-direction: column; gap: 2px; margin-top: 4px;">
-                            <div class="info-row">
-                                <span class="info-label">📱 Страна:</span>
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <span class="info-label">Аккаунт (Страна)</span>
                                 <span class="info-value">${acc.flag || '🏳️'} ${acc.account_country || 'Неизвестно'}</span>
                             </div>
-                            <div class="info-row">
-                                <span class="info-label">🌍 Прокси:</span>
-                                <span class="info-value">${acc.proxy_flag || '🏳️'} ${acc.proxy_country || 'Неизвестно'} (⚡${acc.speed} ms)</span>
+                            <div class="info-item">
+                                <span class="info-label">Прокси (Страна)</span>
+                                <span class="info-value" id="proxy-info-${acc.id}">${acc.proxy_flag || '🏳️'} ${acc.proxy_country || 'Неизвестно'} (⚡${acc.speed} ms)</span>
                             </div>
-                            <div class="info-row">
-                                <span class="info-label">💎 Premium:</span>
+                            <div class="info-item">
+                                <span class="info-label">Premium</span>
                                 <span class="info-value" style="color: ${premColor};">${premText}</span>
                             </div>
-                            <div class="info-row">
-                                <span class="info-label">📱 Устройство:</span>
+                            <div class="info-item">
+                                <span class="info-label">Устройство</span>
                                 <span class="info-value">${acc.device || 'N/A'}</span>
                             </div>
                         </div>
 
                         <div class="proxy-box" onclick="copyProxy('${acc.proxy}')">
-                            <span id="proxy-text-${acc.id}">${proxyDisplay}</span>
+                            <span class="proxy-text">${proxyDisplay}</span>
                             <span style="color: var(--hint);">📋</span>
                         </div>
 
@@ -125,16 +141,16 @@
                     `;
                 }).join("");
             } catch (e) { 
-                document.getElementById('accounts-list').innerHTML = `<div style='text-align:center; color:var(--danger);'>${e.message}</div>`;
+                document.getElementById('accounts-list').innerHTML = `<div style='text-align:center; color:var(--danger); margin-top:20px;'>Ошибка: ${e.message}</div>`;
             }
         }
 
         function copyProxy(proxy) {
-            if (!proxy || proxy === "Нет") return;
+            if (!proxy || proxy === "Нет" || proxy === "Не назначен") return;
             navigator.clipboard.writeText(proxy).then(() => {
-                tg.showAlert("✅ Прокси скопирован в буфер обмена!");
+                tg.showAlert("✅ Прокси скопирован в буфер!");
             }).catch(() => {
-                tg.showAlert("❌ Не удалось скопировать");
+                tg.showAlert("❌ Ошибка копирования");
             });
         }
 
@@ -153,8 +169,8 @@
             const newProxy = document.getElementById('newProxyInput').value.trim();
             if (!newProxy) return tg.showAlert("Введите прокси");
 
-            const btn = document.querySelector('.modal-btn:nth-child(2)');
-            btn.innerText = "...";
+            const btn = document.getElementById('saveBtn');
+            btn.innerText = "Проверка...";
             btn.disabled = true;
 
             try {
@@ -166,13 +182,20 @@
                 
                 const data = await res.json();
                 if (data.status === 'ok') {
-                    tg.showAlert("✅ Прокси обновлен!");
+                    tg.showAlert("✅ Прокси рабочий и обновлен!");
                     closeModal();
-                    document.getElementById('proxy-text-' + currentAccountId).innerText = newProxy.substring(0, 25) + "...";
+                    
+                    // Обновляем данные на карточке на лету
+                    document.getElementById('proxy-info-' + currentAccountId).innerHTML = `${data.proxy_flag} ${data.proxy_country} (⚡${data.speed} ms)`;
                     
                     const card = document.getElementById('card-' + currentAccountId);
-                    const proxyRow = card.querySelectorAll('.info-row')[1];
-                    proxyRow.innerHTML = `<span class="info-label">🌍 Прокси:</span><span class="info-value">${data.proxy_flag} ${data.proxy_country} (⚡${data.speed} ms)</span>`;
+                    const proxyBoxText = card.querySelector('.proxy-text');
+                    if (proxyBoxText) proxyBoxText.innerText = newProxy;
+                    
+                    // Меняем статус на ONLINE
+                    const badge = card.querySelector('.badge');
+                    badge.className = 'badge badge-ok';
+                    badge.innerText = 'ONLINE';
                 } else {
                     tg.showAlert("Ошибка: " + data.message);
                 }
@@ -186,17 +209,17 @@
 
         function buyPremium(accountId) {
             tg.showPopup({
-                title: 'Оплата',
-                message: 'Перейти в @PremiumBot для покупки на 1 месяц?',
-                buttons: [{id: 'ok', type: 'default', text: 'Перейти'}]
+                title: 'Оплата Premium',
+                message: 'Перейти в официальный @PremiumBot для покупки на 1 месяц?',
+                buttons: [{id: 'ok', type: 'default', text: 'Перейти в бота'}]
             }, function(btnId) {
                 if (btnId === 'ok') { tg.openLink('https://t.me/PremiumBot'); }
             });
         }
 
         function openBot(username) {
-            if (!username || username.startsWith('Аккаунт')) {
-                tg.showAlert("У этого аккаунта нет юзернейма");
+            if (!username || username.startsWith('Аккаунт') || username.startsWith('Без имени')) {
+                tg.showAlert("У этого аккаунта нет юзернейма для открытия.");
                 return;
             }
             const link = `https://t.me/${username}`;
