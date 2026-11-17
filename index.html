@@ -104,8 +104,10 @@
             tg.openLink(link);
         }
 
+        // Обновленная функция для кнопки "Прокси"
         function reconnect(accountId) {
-            tg.showAlert("Переподключение прокси...");
+            tg.sendData(JSON.stringify({ action: "change_proxy", acc_id: accountId }));
+            tg.close();
         }
 
         document.addEventListener('DOMContentLoaded', () => { fetchAccounts(); });
