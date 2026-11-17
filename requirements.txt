@@ -4,3 +4,4 @@ opentele
 telethon
 cryptg
 python-socks[asyncio]
+python-multipart
