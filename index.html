@@ -6,29 +6,30 @@
     <title>Premium Manager</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        :root { --bg: var(--tg-theme-bg-color, #121212); --card: var(--tg-theme-secondary-bg-color, #1e1e1e); --text: var(--tg-theme-text-color, #fff); --hint: var(--tg-theme-hint-color, #888); --success: #2ecc71; --danger: #e74c3c; }
-        body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 16px; }
-        .card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.05); }
-        .header { font-size: 20px; font-weight: 700; margin-bottom: 16px; text-align: center; }
-        .btn { width: 100%; padding: 14px; border: none; border-radius: 12px; font-weight: 700; font-size: 16px; cursor: pointer; margin-top: 10px; }
-        .btn-buy { background: var(--success); color: #fff; padding: 8px; font-size: 14px; margin-top: 10px; width: auto; display: inline-block; }
-        .account-row { display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 0; }
-        .account-row:last-child { border-bottom: none; }
-        .acc-top { display: flex; justify-content: space-between; align-items: center; }
-        .acc-name { font-weight: 700; font-size: 16px; }
-        .acc-phone { font-size: 14px; color: var(--hint); }
-        .acc-details { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; margin-top: 4px; }
-        .detail-item { background: rgba(255,255,255,0.03); padding: 6px; border-radius: 6px; }
-        .detail-label { color: var(--hint); font-size: 11px; display: block; }
-        .status-badge { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; }
-        .prem-yes { background: rgba(46, 204, 113, 0.2); color: var(--success); }
-        .prem-no { background: rgba(231, 76, 60, 0.2); color: var(--danger); }
-        .total-counter { font-size: 14px; color: var(--hint); text-align: center; margin-bottom: 12px; }
+        :root { --bg: var(--tg-theme-bg-color, #121212); --card: var(--tg-theme-secondary-bg-color, #1e1e1e); --text: var(--tg-theme-text-color, #fff); --hint: var(--tg-theme-hint-color, #888); --success: #2ecc71; --danger: #e74c3c; --btn: var(--tg-theme-button-color, #2ea6ff); }
+        body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 8px; }
+        .header { font-size: 18px; font-weight: 700; margin-bottom: 12px; text-align: center; }
+        
+        .card { background: var(--card); border-radius: 12px; padding: 10px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.05); display: flex; flex-direction: column; gap: 6px; }
+        
+        .row-top { display: flex; justify-content: space-between; align-items: center; }
+        .acc-name { font-weight: 700; font-size: 14px; }
+        .acc-phone { font-size: 12px; color: var(--hint); }
+        
+        .row-mid { display: flex; justify-content: space-between; font-size: 11px; color: var(--hint); background: rgba(255,255,255,0.03); padding: 6px; border-radius: 6px; }
+        
+        .actions { display: flex; gap: 6px; margin-top: 4px; }
+        .btn-action { flex: 1; padding: 8px; border: none; border-radius: 8px; font-weight: 700; font-size: 12px; cursor: pointer; text-align: center; }
+        .btn-buy { background: var(--success); color: #fff; }
+        .btn-open { background: var(--btn); color: #fff; }
+        .btn-reconnect { background: #f39c12; color: #fff; }
+        
+        .prem-yes { color: var(--success); font-weight: 700; }
+        .prem-no { color: var(--danger); font-weight: 700; }
     </style>
 </head>
 <body>
-    <div class="header">💎 Premium Manager</div>
-    <div class="total-counter" id="total-counter">Загрузка данных...</div>
+    <div class="header">💎 Менеджер</div>
     <div id="accounts-list"></div>
     <script>
         const tg = window.Telegram.WebApp; tg.expand();
@@ -40,57 +41,59 @@
                 if (!res.ok) throw new Error("Сервер не отвечает");
                 const accounts = await res.json();
                 const listEl = document.getElementById('accounts-list');
-                const counterEl = document.getElementById('total-counter');
                 
                 if (accounts.length === 0) {
-                    counterEl.innerText = "Нет загруженных аккаунтов";
-                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint);'>Зайди в бота и загрузи ZIP с аккаунтами.</div>";
+                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint); font-size:14px; margin-top:20px;'>Нет аккаунтов. Загрузи архив в боте.</div>";
                     return;
                 }
                 
-                counterEl.innerText = `Всего аккаунтов: ${accounts.length}`;
                 listEl.innerHTML = accounts.map(acc => {
+                    const premText = acc.premium ? `Premium до ${acc.premium_expires}` : 'Нет Premium';
                     const premClass = acc.premium ? 'prem-yes' : 'prem-no';
-                    const premText = acc.premium ? `Premium до ${acc.premium_expires}` : 'Без Premium';
                     
                     return `
-                    <div class="card account-row">
-                        <div class="acc-top">
+                    <div class="card">
+                        <div class="row-top">
                             <div>
-                                <div class="acc-name">${acc.username} ${acc.first_name}</div>
+                                <div class="acc-name">${acc.username}</div>
                                 <div class="acc-phone">${acc.phone}</div>
                             </div>
-                            <div class="status-badge ${premClass}">${premText}</div>
+                            <div class="${premClass}" style="font-size:11px;">${premText}</div>
                         </div>
-                        <div class="acc-details">
-                            <div class="detail-item"><span class="detail-label">Страна (IP)</span> ${acc.proxy_country} (${acc.ip})</div>
-                            <div class="detail-item"><span class="detail-label">Устройство</span> ${acc.device}</div>
-                            <div class="detail-item" style="grid-column: span 2;"><span class="detail-label">Прокси</span> ${acc.proxy}</div>
+                        <div class="row-mid">
+                            <span>🌍 ${acc.account_country || 'UNKNOWN'} (${acc.proxy_country || 'UNKNOWN'})</span>
+                            <span>⚡ ${acc.speed || '0'} ms</span>
+                            <span>📱 ${acc.device || 'N/A'}</span>
                         </div>
-                        <button class="btn btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить Premium (1 мес)</button>
+                        <div class="actions">
+                            <button class="btn-action btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить</button>
+                            <button class="btn-action btn-open" onclick="openBot('${acc.id}')">📱 Открыть</button>
+                            <button class="btn-action btn-reconnect" onclick="reconnect('${acc.id}')">🔄 Прокси</button>
+                        </div>
                     </div>
                     `;
                 }).join("");
             } catch (e) { 
-                document.getElementById('total-counter').innerText = "Ошибка загрузки";
                 document.getElementById('accounts-list').innerHTML = `<div style='text-align:center; color:var(--danger);'>${e.message}</div>`;
             }
         }
 
-        async function buyPremium(accountId) {
-            try {
-                const res = await fetch(`${API_URL}/api/get_premium_link?account_id=${accountId}`);
-                const data = await res.json();
-                if (data.status === 'ok') {
-                    tg.showPopup({
-                        title: 'Оплата Premium (1 месяц)',
-                        message: `Открой @PremiumBot строго через этот прокси:\n${data.proxy}\n\nВ боте выбери "1 месяц" и оплати картой.`,
-                        buttons: [{id: 'open', type: 'default', text: 'Открыть @PremiumBot'}]
-                    }, function(btnId) {
-                        if (btnId === 'open') { tg.openLink(data.premium_url); }
-                    });
-                } else { tg.showAlert("Ошибка: " + data.message); }
-            } catch (e) { tg.showAlert("Ошибка: " + e.message); }
+        function buyPremium(accountId) {
+            tg.showPopup({
+                title: 'Оплата',
+                message: 'Перейти в @PremiumBot для покупки на 1 месяц?',
+                buttons: [{id: 'ok', type: 'default', text: 'Перейти'}]
+            }, function(btnId) {
+                if (btnId === 'ok') { tg.openLink('https://t.me/PremiumBot'); }
+            });
+        }
+
+        function openBot(accountId) {
+            tg.showAlert("Функция 'Открыть бота' в разработке (нужен запуск клиента).");
+        }
+
+        function reconnect(accountId) {
+            tg.showAlert("Переподключение прокси...");
         }
 
         document.addEventListener('DOMContentLoaded', () => { fetchAccounts(); });
