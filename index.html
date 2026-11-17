@@ -112,16 +112,34 @@
                             <div class="detail-item"><span class="detail-label">Устройство</span> ${acc.device}</div>
                             <div class="detail-item" style="grid-column: span 2;"><span class="detail-label">Прокси</span> ${acc.proxy}</div>
                         </div>
-                        <button class="btn btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить Premium</button>
+                        <button class="btn btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить Premium (1 мес)</button>
                     </div>
                     `;
                 }).join("");
             } catch (e) { console.error(e); }
         }
 
-        function buyPremium(accountId) {
-            tg.showAlert("Генерация счета на оплату для аккаунта " + accountId);
-            // Тут будет API запрос на покупку через Smart Glocal
+        async function buyPremium(accountId) {
+            try {
+                const res = await fetch(`${API_URL}/api/get_premium_link?account_id=${accountId}`);
+                const data = await res.json();
+                
+                if (data.status === 'ok') {
+                    tg.showPopup({
+                        title: 'Оплата Premium (1 месяц)',
+                        message: `Открой @PremiumBot строго через этот прокси:\n${data.proxy}\n\nВыбери "1 месяц" и оплати картой (Smart Glocal/Stripe).`,
+                        buttons: [{id: 'open', type: 'default', text: 'Открыть @PremiumBot'}]
+                    }, function(btnId) {
+                        if (btnId === 'open') {
+                            tg.openLink(data.premium_url);
+                        }
+                    });
+                } else {
+                    tg.showAlert("Ошибка: " + data.message);
+                }
+            } catch (e) {
+                tg.showAlert("Ошибка соединения");
+            }
         }
 
         document.addEventListener('DOMContentLoaded', () => { fetchAccounts(); });
