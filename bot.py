@@ -10,7 +10,6 @@ import requests
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
-import socks
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message, WebAppInfo
@@ -20,6 +19,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
 from tdata_reader import read_tdata
+from python_socks import ProxyType # Используем python-socks
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
@@ -66,9 +66,9 @@ def parse_proxy(proxy_str):
         proxy_str = 'socks5://' + proxy_str
         
     parsed = urlparse(proxy_str)
-    if parsed.scheme == 'socks5': p_type = socks.SOCKS5
-    elif parsed.scheme == 'socks4': p_type = socks.SOCKS4
-    else: p_type = socks.HTTP
+    if parsed.scheme == 'socks5': p_type = ProxyType.SOCKS5
+    elif parsed.scheme == 'socks4': p_type = ProxyType.SOCKS4
+    else: p_type = ProxyType.HTTP
         
     return (p_type, parsed.hostname, parsed.port, True, parsed.username, parsed.password), proxy_str, parsed.hostname
 
@@ -80,10 +80,23 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
+# --- CORS MIDDLEWARE ---
+@web.middleware
+async def cors_middleware(request, handler):
+    if request.method == 'OPTIONS':
+        return web.Response(
+            status=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            }
+        )
+    response = await handler(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
 async def handle_upload_and_process(request):
-    headers = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type"}
-    if request.method == 'OPTIONS': return web.Response(status=200, headers=headers)
-    
     try:
         print("=== НАЧАЛО ОБРАБОТКИ ===")
         post = await request.post()
@@ -91,7 +104,7 @@ async def handle_upload_and_process(request):
         proxies_field = post.get('proxies')
 
         if not zip_field or not proxies_field:
-            return web.json_response({"status": "error", "message": "Нет файла или прокси"}, status=400, headers=headers)
+            return web.json_response({"status": "error", "message": "Нет файла или прокси"}, status=400)
 
         zip_data = zip_field.file.read()
         proxies_text = proxies_field.strip()
@@ -111,7 +124,7 @@ async def handle_upload_and_process(request):
             proxy_list.append({"raw": p_str, "tuple": p_tuple, "country": country})
             print(f"Прокси {p_ip} -> Страна: {country}")
 
-        if not proxy_list: return web.json_response({"status": "error", "message": "Пустой список прокси"}, status=400, headers=headers)
+        if not proxy_list: return web.json_response({"status": "error", "message": "Пустой список прокси"}, status=400)
 
         accounts = []
         folders = [d for d in TDATA_DIR.iterdir() if d.is_dir()]
@@ -181,38 +194,30 @@ async def handle_upload_and_process(request):
 
         save_json(ACCOUNTS_FILE, accounts)
         print("=== УСПЕШНО ЗАВЕРШЕНО ===")
-        return web.json_response({"status": "ok", "message": f"Обработано: {len(accounts)}"}, headers=headers)
+        return web.json_response({"status": "ok", "message": f"Обработано: {len(accounts)}"})
 
     except Exception as e:
         print("=== ГЛОБАЛЬНАЯ ОШИБКА ===")
         traceback.print_exc()
-        return web.json_response({"status": "error", "message": f"Ошибка: {str(e)}"}, status=500, headers=headers)
+        return web.json_response({"status": "error", "message": f"Ошибка: {str(e)}"}, status=500)
 
 async def handle_get_accounts(request):
-    headers = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, OPTIONS", "Access-Control-Allow-Headers": "Content-Type"}
-    if request.method == 'OPTIONS': return web.Response(status=200, headers=headers)
-    return web.json_response(load_json(ACCOUNTS_FILE, []), headers=headers)
+    return web.json_response(load_json(ACCOUNTS_FILE, []))
 
 async def handle_get_premium_link(request):
-    headers = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, OPTIONS", "Access-Control-Allow-Headers": "Content-Type"}
-    if request.method == 'OPTIONS': return web.Response(status=200, headers=headers)
-    
     acc_id = request.query.get('account_id')
     accounts = load_json(ACCOUNTS_FILE, [])
     acc = next((a for a in accounts if a["id"] == acc_id), None)
     
     if not acc:
-        return web.json_response({"status": "error", "message": "Аккаунт не найден"}, status=404, headers=headers)
+        return web.json_response({"status": "error", "message": "Аккаунт не найден"}, status=404)
 
-    # Официальный бот для покупки Premium
-    premium_bot_link = "https://t.me/PremiumBot"
-    
     return web.json_response({
         "status": "ok", 
-        "premium_url": premium_bot_link,
+        "premium_url": "https://t.me/PremiumBot",
         "proxy": acc.get("proxy", "Прокси не назначен"),
         "country": acc.get("proxy_country", "UNKNOWN")
-    }, headers=headers)
+    })
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -221,13 +226,10 @@ async def cmd_start(message: Message):
         await message.answer("Открой панель 👇", reply_markup={"keyboard": [[{"text": "Управление", "web_app": web_app}]], "resize_keyboard": True})
 
 async def main():
-    app = web.Application(client_max_size=1024**3)
+    app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
     app.router.add_post('/api/upload', handle_upload_and_process)
-    app.router.add_options('/api/upload', handle_upload_and_process)
     app.router.add_get('/api/accounts', handle_get_accounts)
-    app.router.add_options('/api/accounts', handle_get_accounts)
     app.router.add_get('/api/get_premium_link', handle_get_premium_link)
-    app.router.add_options('/api/get_premium_link', handle_get_premium_link)
     
     runner = web.AppRunner(app)
     await runner.setup()
