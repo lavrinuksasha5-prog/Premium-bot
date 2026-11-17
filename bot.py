@@ -34,6 +34,11 @@ class UploadStates(StatesGroup):
     waiting_zip = State()
     waiting_proxies = State()
 
+# Инициализация Telethon при первом запуске
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+from telethon.tl.functions.users import GetFullUserRequest
+
 @web.middleware
 async def cors_middleware(request, handler):
     if request.method == 'OPTIONS':
@@ -43,12 +48,22 @@ async def cors_middleware(request, handler):
     return response
 
 async def handle_get_accounts(request):
-    return web.json_response([]) # Пока отдаем пустой список, чтобы панель не падала
+    return web.json_response(load_json(ACCOUNTS_FILE, []))
 
 async def handle_index(request):
     html_path = Path(__file__).parent / "index.html"
     if html_path.exists(): return web.FileResponse(html_path)
     return web.Response(text="Ошибка: index.html не найден", status=404)
+
+def load_json(file_path, default):
+    if file_path.exists():
+        try:
+            with open(file_path, "r", encoding="utf-8") as f: return json.load(f)
+        except Exception: return default
+    return default
+
+def save_json(file_path, data):
+    with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -80,18 +95,43 @@ async def process_zip(message: Message, state: FSMContext):
 @dp.message(UploadStates.waiting_proxies, F.text)
 async def process_proxies(message: Message, state: FSMContext):
     await state.clear()
+    msg = await message.answer("⏳ Ищу аккаунты в глубине архива...")
     
-    # Просто сохраняем заглушку для теста
-    test_accounts = [
-        {"id": "1", "username": "test_acc_1", "phone": "+380...", "premium": True, "premium_expires": "01.01.2027", "country": "UA", "ip": "127.0.0.1", "device": "iPhone 14", "proxy": message.text[:20]}
-    ]
-    with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(test_accounts, f)
+    # Рекурсивный поиск всех файлов
+    found_accounts = []
+    for root, dirs, files in os.walk(TDATA_DIR):
+        for file in files:
+            if file.endswith(".json"):
+                # Пробуем прочитать JSON
+                json_path = os.path.join(root, file)
+                acc_id = file.replace(".json", "")
+                try:
+                    with open(json_path, "r", encoding="utf-8") as f: data = json.load(f)
+                    session_str = data.get("session_string") or data.get("session")
+                    api_id = data.get("api_id")
+                    api_hash = data.get("api_hash")
+                    
+                    if session_str and api_id and api_hash:
+                        # Добавляем аккаунт-заглушку, чтобы ты увидел, что он его нашел
+                        found_accounts.append({
+                            "id": acc_id, "username": f"Найден JSON: {acc_id}", "first_name": "", "phone": "N/A", 
+                            "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", 
+                            "premium": False, "premium_expires": "Нет", 
+                            "device": "Устройство не проверено", "proxy": "Прокси не назначен"
+                        })
+                except:
+                    pass
+
+    save_json(ACCOUNTS_FILE, found_accounts)
     
+    if not found_accounts:
+        await msg.edit_text("❌ В архиве не найдено JSON-файлов с сессиями (session_string).")
+        return
+        
     web_app = WebAppInfo(url="https://worker-production-578b44ee.up.railway.app/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 Открыть панель", web_app=web_app)]], resize_keyboard=True)
     
-    await message.answer("✅ Тест пройден. Открывай панель:", reply_markup=kb)
+    await msg.edit_text(f"✅ Найдено аккаунтов: {len(found_accounts)}.\nОткрывай панель:", reply_markup=kb)
 
 async def main():
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
