@@ -32,7 +32,6 @@
     <div id="accounts-list"></div>
     <script>
         const tg = window.Telegram.WebApp; tg.expand();
-        // Берем текущий домен (Railway), чтобы не было CORS
         const API_URL = window.location.origin; 
 
         async function fetchAccounts() {
