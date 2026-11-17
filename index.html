@@ -45,7 +45,6 @@
         .btn-open { background: var(--btn); color: #fff; }
         .btn-reconnect { background: var(--warning); color: #fff; }
 
-        /* Модальное окно */
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); justify-content: center; align-items: center; z-index: 100; }
         .modal-content { background: var(--card); padding: 20px; border-radius: 12px; width: 85%; max-width: 320px; }
         .modal-content h3 { margin-top: 0; margin-bottom: 12px; font-size: 16px; }
@@ -58,11 +57,10 @@
     <div class="header">💎 Менеджер</div>
     <div id="accounts-list"></div>
 
-    <!-- Модальное окно -->
     <div class="modal" id="proxyModal">
         <div class="modal-content">
             <h3>Сменить прокси</h3>
-            <input type="text" id="newProxyInput" placeholder="socks5://user:pass@ip:port">
+            <input type="text" id="newProxyInput" placeholder="host:port:login:pass">
             <div class="modal-actions">
                 <button class="modal-btn" style="background: var(--hint); color: #fff;" onclick="closeModal()">Отмена</button>
                 <button class="modal-btn" id="saveBtn" style="background: var(--success); color: #fff;" onclick="saveProxy()">Сохранить</button>
@@ -185,14 +183,12 @@
                     tg.showAlert("✅ Прокси рабочий и обновлен!");
                     closeModal();
                     
-                    // Обновляем данные на карточке на лету
                     document.getElementById('proxy-info-' + currentAccountId).innerHTML = `${data.proxy_flag} ${data.proxy_country} (⚡${data.speed} ms)`;
                     
                     const card = document.getElementById('card-' + currentAccountId);
                     const proxyBoxText = card.querySelector('.proxy-text');
                     if (proxyBoxText) proxyBoxText.innerText = newProxy;
                     
-                    // Меняем статус на ONLINE
                     const badge = card.querySelector('.badge');
                     badge.className = 'badge badge-ok';
                     badge.innerText = 'ONLINE';
