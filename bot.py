@@ -31,11 +31,10 @@ dp = Dispatcher()
 data_dir = Path("/app/data")
 data_dir.mkdir(parents=True, exist_ok=True)
 ACCOUNTS_FILE = data_dir / "accounts.json"
-DEVICES_FILE = data_dir / "devices.json"  # Файл для Sticky-устройств
+DEVICES_FILE = data_dir / "devices.json"
 TDATA_DIR = data_dir / "tdata"
 TDATA_DIR.mkdir(exist_ok=True)
 
-# Список девайсов для рандома
 DEVICES = [
     {"model": "Desktop", "system": "Windows 10", "app": "4.8.1"},
     {"model": "Xiaomi Redmi Note 10", "system": "Android 12", "app": "9.6.1"},
@@ -103,7 +102,6 @@ async def handle_upload_and_process(request):
         with zipfile.ZipFile(io.BytesIO(zip_data)) as z: 
             z.extractall(TDATA_DIR)
 
-        # Парсим прокси и кэшируем их страны
         proxy_list = []
         for p_raw in proxies_text.split('\n'):
             p_raw = p_raw.strip()
@@ -122,7 +120,7 @@ async def handle_upload_and_process(request):
         for i, folder in enumerate(folders):
             print(f"Обработка {folder.name}...")
             acc_id = folder.name 
-            device = get_sticky_device(acc_id) # Стики-девайс
+            device = get_sticky_device(acc_id)
 
             acc_info = {
                 "id": acc_id, "username": "Ошибка", "first_name": "", "phone": "N/A", "country": "Неизвестно",
@@ -132,11 +130,9 @@ async def handle_upload_and_process(request):
             }
 
             try:
-                # Читаем tdata
                 acc = read_tdata(str(folder))
                 session_string = acc.to_string_session()
                 
-                # Первичное подключение для получения инфы (через первый прокси из пула)
                 temp_proxy = random.choice(proxy_list)
                 client = TelegramClient(
                     StringSession(session_string), acc.api_id, acc.api_hash, 
@@ -153,27 +149,24 @@ async def handle_upload_and_process(request):
                     acc_info["phone"] = f"+{me.phone}" if me.phone else "Скрыт"
                     acc_info["valid"] = True
                     
-                    # Получаем инфу о Премиуме и дате окончания
                     full_user = await client(GetFullUserRequest(me.id))
                     if full_user.full_user.premium_expires:
                         acc_info["premium"] = True
                         exp_date = datetime.fromtimestamp(full_user.full_user.premium_expires)
                         acc_info["premium_expires"] = exp_date.strftime("%d.%m.%Y")
                     
-                    # Определяем страну самого аккаунта (по номеру)
                     if me.phone:
                         acc_info["country"] = "UA" if me.phone.startswith("380") else "RU" if me.phone.startswith("7") else "US"
                         
-                    # Выбираем правильный прокси по стране аккаунта (Гео-матчинг)
                     matching_proxies = [p for p in proxy_list if p["country"] == acc_info["country"]]
                     if matching_proxies:
-                        chosen_proxy = random.choice(matching_proxies) # Рандом из пула этой же страны
+                        chosen_proxy = random.choice(matching_proxies)
                     else:
-                        chosen_proxy = temp_proxy # Если совпадений нет, оставляем первый
+                        chosen_proxy = temp_proxy
                         
                     acc_info["proxy"] = chosen_proxy["raw"]
                     acc_info["proxy_country"] = chosen_proxy["country"]
-                    acc_info["ip"] = chosen_proxy["tuple"][1] # IP прокси
+                    acc_info["ip"] = chosen_proxy["tuple"][1]
                     
                     await client.disconnect()
                 else:
@@ -200,6 +193,27 @@ async def handle_get_accounts(request):
     if request.method == 'OPTIONS': return web.Response(status=200, headers=headers)
     return web.json_response(load_json(ACCOUNTS_FILE, []), headers=headers)
 
+async def handle_get_premium_link(request):
+    headers = {"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, OPTIONS", "Access-Control-Allow-Headers": "Content-Type"}
+    if request.method == 'OPTIONS': return web.Response(status=200, headers=headers)
+    
+    acc_id = request.query.get('account_id')
+    accounts = load_json(ACCOUNTS_FILE, [])
+    acc = next((a for a in accounts if a["id"] == acc_id), None)
+    
+    if not acc:
+        return web.json_response({"status": "error", "message": "Аккаунт не найден"}, status=404, headers=headers)
+
+    # Официальный бот для покупки Premium
+    premium_bot_link = "https://t.me/PremiumBot"
+    
+    return web.json_response({
+        "status": "ok", 
+        "premium_url": premium_bot_link,
+        "proxy": acc.get("proxy", "Прокси не назначен"),
+        "country": acc.get("proxy_country", "UNKNOWN")
+    }, headers=headers)
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     if message.from_user.id == ADMIN_ID:
@@ -212,6 +226,8 @@ async def main():
     app.router.add_options('/api/upload', handle_upload_and_process)
     app.router.add_get('/api/accounts', handle_get_accounts)
     app.router.add_options('/api/accounts', handle_get_accounts)
+    app.router.add_get('/api/get_premium_link', handle_get_premium_link)
+    app.router.add_options('/api/get_premium_link', handle_get_premium_link)
     
     runner = web.AppRunner(app)
     await runner.setup()
