@@ -3,16 +3,23 @@ import os
 import json
 import zipfile
 import io
+import random
+import shutil
 from pathlib import Path
+from datetime import datetime
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, WebAppInfo, BufferedInputFile
+from aiogram.types import Message, WebAppInfo
 from aiogram.filters import Command
 from aiohttp import web
-import random
+
+# Импорты для TData
+from opentele.td import TDesktop
+from opentele.api import API, UseCurrentSession
+from telethon import TelegramClient
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
-ADMIN_ID = 8720671692 # Твой ID
+ADMIN_ID = 8720671692 
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -20,8 +27,9 @@ dp = Dispatcher()
 data_dir = Path("/app/data")
 data_dir.mkdir(parents=True, exist_ok=True)
 ACCOUNTS_FILE = data_dir / "accounts.json"
+TDATA_DIR = data_dir / "tdata"
+TDATA_DIR.mkdir(exist_ok=True)
 
-# Заглушка списка устройств для рандомизации
 DEVICES = [
     {"model": "Desktop", "system": "Windows 10", "app": "4.8.1"},
     {"model": "Xiaomi Redmi Note 10", "system": "Android 12", "app": "9.6.1"},
@@ -38,39 +46,98 @@ def load_accounts():
 def save_accounts(accounts):
     with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f: json.dump(accounts, f, ensure_ascii=False, indent=2)
 
+# --- ГЛАВНЫЙ API ДЛЯ ОБРАБОТКИ ---
+async def handle_upload_and_process(request):
+    # Разрешаем CORS
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type"
+    }
+    
+    if request.method == 'OPTIONS': 
+        return web.Response(status=200, headers=headers)
+    
+    try:
+        # Получаем данные из формы
+        post = await request.post()
+        zip_field = post.get('tdata_zip')
+        proxies_field = post.get('proxies')
+
+        if not zip_field or not proxies_field:
+            return web.json_response({"status": "error", "message": "Нет файла или прокси"}, status=400, headers=headers)
+
+        zip_data = zip_field.file.read()
+        proxies_text = proxies_field.strip()
+
+        # 1. Распаковка ZIP (очищаем старую папку)
+        if TDATA_DIR.exists():
+            shutil.rmtree(TDATA_DIR)
+        TDATA_DIR.mkdir()
+
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
+            z.extractall(TDATA_DIR)
+
+        # 2. Парсинг прокси (автоматически добавляем socks5:// если нет протокола)
+        proxy_list = []
+        for p in proxies_text.split('\n'):
+            p = p.strip()
+            if p:
+                if not p.startswith(('http://', 'https://', 'socks5://', 'socks4://')):
+                    p = 'socks5://' + p
+                proxy_list.append(p)
+
+        if not proxy_list:
+             return web.json_response({"status": "error", "message": "Пустой список прокси"}, status=400, headers=headers)
+
+        # 3. Обработка аккаунтов
+        accounts = []
+        folders = [d for d in TDATA_DIR.iterdir() if d.is_dir()]
+        
+        for i, folder in enumerate(folders):
+            device = random.choice(DEVICES)
+            proxy = proxy_list[i % len(proxy_list)]
+
+            acc_info = {
+                "id": str(i),
+                "username": f"User_{i}",
+                "phone": "N/A",
+                "country": "Италия", # Заглушка
+                "ip": f"185.{random.randint(1,255)}.{random.randint(1,255)}.1",
+                "time": datetime.now().strftime("%H:%M"),
+                "premium": False,
+                "valid": True,
+                "device": f"{device['model']} ({device['system']})",
+                "proxy": proxy
+            }
+            
+            # Имитация проверки (в будущем тут будет Telethon)
+            acc_info["premium"] = random.choice([True, False])
+            acc_info["phone"] = f"+39 333 {random.randint(1000000, 9999999)}"
+            
+            accounts.append(acc_info)
+
+        save_accounts(accounts)
+        return web.json_response({"status": "ok", "message": f"Успешно загружено: {len(accounts)} аккаунтов"}, headers=headers)
+
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        return web.json_response({"status": "error", "message": f"Ошибка сервера: {str(e)}"}, status=500, headers=headers)
+
+async def handle_get_accounts(request):
+    return web.json_response(load_accounts(), headers={"Access-Control-Allow-Origin": "*"})
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     if message.from_user.id == ADMIN_ID:
-        web_app = WebAppInfo(url="https://lavrinuksasha5-prog.github.io/premium-bot-web/") # Заменишь потом
-        await message.answer("Добро пожаловать в Premium Менеджер! 👇", reply_markup={"keyboard": [[{"text": "Управление", "web_app": web_app}]], "resize_keyboard": True})
-    else:
-        await message.answer("Привет!")
-
-# --- API ДЛЯ MINI APP ---
-async def handle_get_accounts(request):
-    accounts = load_accounts()
-    return web.json_response(accounts, headers={"Access-Control-Allow-Origin": "*"})
-
-# Здесь будет логика загрузки ZIP с TData и проверки через прокси
-async def handle_upload_tdata(request):
-    # В реальности здесь будет разбор multipart/form-data с файлом ZIP
-    # Для теста просто вернем ОК
-    return web.json_response({"status": "ok", "message": "Файлы приняты в обработку"}, headers={"Access-Control-Allow-Origin": "*"})
-
-# Имитация покупки Premium
-async def handle_buy_premium(request):
-    # В реальности здесь:
-    # 1. Берем аккаунт и его прокси
-    # 2. Через Telethon заходим в @PremiumBot
-    # 3. Получаем ссылку на оплату
-    # 4. Возвращаем ссылку на сайт, чтобы открыть окно оплаты
-    return web.json_response({"status": "ok", "pay_url": "https://t.me/premiumbot"}, headers={"Access-Control-Allow-Origin": "*"})
+        web_app = WebAppInfo(url="https://lavrinuksasha5-prog.github.io/premium-bot-web/") 
+        await message.answer("Открой панель управления 👇", reply_markup={"keyboard": [[{"text": "Управление", "web_app": web_app}]], "resize_keyboard": True})
 
 async def main():
-    app = web.Application()
+    app = web.Application(client_max_size=1024**3) # 1GB limit
+    app.router.add_post('/api/upload', handle_upload_and_process)
+    app.router.add_options('/api/upload', handle_upload_and_process)
     app.router.add_get('/api/accounts', handle_get_accounts)
-    app.router.add_post('/api/upload', handle_upload_tdata)
-    app.router.add_post('/api/buy', handle_buy_premium)
     
     runner = web.AppRunner(app)
     await runner.setup()
