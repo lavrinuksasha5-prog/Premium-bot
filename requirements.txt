@@ -3,5 +3,6 @@ aiohttp
 telethon
 python-socks[asyncio]
 requests
-tdata-reader
 cryptg
+opentele
+pycryptodome
