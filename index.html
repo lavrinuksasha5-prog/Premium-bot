@@ -10,7 +10,7 @@
         body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 16px; }
         .card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.05); }
         .header { font-size: 20px; font-weight: 700; margin-bottom: 16px; text-align: center; }
-        input[type="text"], input[type="file"] { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--card); background: var(--bg); color: var(--text); margin-bottom: 8px; box-sizing: border-box; }
+        input[type="text"] { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid var(--card); background: var(--bg); color: var(--text); margin-bottom: 8px; box-sizing: border-box; }
         .btn { width: 100%; padding: 14px; border: none; border-radius: 12px; font-weight: 700; font-size: 16px; cursor: pointer; margin-top: 10px; }
         .btn-primary { background: var(--btn); color: #fff; }
         .btn-buy { background: var(--success); color: #fff; padding: 8px; font-size: 14px; margin-top: 0; }
@@ -24,36 +24,59 @@
     <div class="header">💎 Premium Manager</div>
     
     <div class="card">
-        <div style="font-weight: 600; margin-bottom: 8px;">1. Загрузите ZIP с TData</div>
-        <input type="file" id="tdata-file" accept=".zip">
-        <div style="font-weight: 600; margin-bottom: 8px; margin-top: 12px;">2. Вставьте прокси (1 на всех)</div>
+        <div style="font-weight: 600; margin-bottom: 8px;">1. Вставьте прокси (Ротационный)</div>
         <input type="text" id="proxy-input" placeholder="socks5://user:pass@ip:port">
-        <button class="btn btn-primary" onclick="uploadData()">Загрузить и проверить</button>
+        <button class="btn btn-primary" onclick="startCheck()">2. Проверить аккаунты</button>
+        <div style="font-size: 12px; color: var(--hint); margin-top: 8px; text-align: center;">
+            * Перед проверкой загрузите ZIP с TData в чат с ботом.
+        </div>
     </div>
 
-    <div id="accounts-list"></div>
+    <div id="accounts-list">
+        <div style="text-align:center; color:var(--hint); padding: 20px;">Загрузка списка...</div>
+    </div>
 
     <script>
         const tg = window.Telegram.WebApp; tg.expand();
-        const API_URL = "https://твой-новый-домен.up.railway.app"; // ЗАМЕНИТЬ
+        const API_URL = "https://worker-production-578b44ee.up.railway.app"; // ТВОЙ НОВЫЙ СЕРВЕР
+        let accountsData = [];
 
-        async function uploadData() {
-            tg.showAlert("Загрузка и проверка аккаунтов... (Функция в разработке)");
-            // Логика отправки ZIP и прокси на сервер
+        async function startCheck() {
+            const proxy = document.getElementById('proxy-input').value.trim();
+            if (!proxy) return tg.showAlert("Введи прокси!");
+            
+            tg.showAlert("Запускаю проверку аккаунтов через прокси... (Ждите)");
+            
+            try {
+                const res = await fetch(`${API_URL}/api/start_check`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ proxy: proxy })
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    tg.showAlert(data.message);
+                    fetchAccounts(); // Обновить список через пару секунд
+                } else {
+                    tg.showAlert("Ошибка: " + data.message);
+                }
+            } catch (e) {
+                tg.showAlert("Ошибка соединения");
+            }
         }
 
         async function fetchAccounts() {
             try {
                 const res = await fetch(`${API_URL}/api/accounts`);
-                const accounts = await res.json();
+                accountsData = await res.json();
                 const listEl = document.getElementById('accounts-list');
                 
-                if (accounts.length === 0) {
-                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint);'>Нет аккаунтов</div>";
+                if (accountsData.length === 0) {
+                    listEl.innerHTML = "<div style='text-align:center; color:var(--hint);'>Аккаунтов пока нет. Загрузите ZIP в бота.</div>";
                     return;
                 }
 
-                listEl.innerHTML = accounts.map(acc => `
+                listEl.innerHTML = accountsData.map(acc => `
                     <div class="card account-row">
                         <div class="account-info">
                             <div><b>${acc.username || 'Аккаунт'}</b></div>
@@ -69,10 +92,13 @@
 
         function buyPremium(accountId) {
             tg.showAlert("Открываю окно оплаты...");
-            // Логика запроса к боту для получения ссылки на оплату
+            // Логика запроса ссылки на оплату
         }
 
-        document.addEventListener('DOMContentLoaded', fetchAccounts);
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchAccounts();
+            setInterval(fetchAccounts, 5000); // Автообновление
+        });
     </script>
 </body>
 </html>
