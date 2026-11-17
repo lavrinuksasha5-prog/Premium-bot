@@ -79,7 +79,7 @@
                         <div class="actions">
                             <button class="btn-action btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить</button>
                             <button class="btn-action btn-open" onclick="openBot('${acc.username}')">📱 Открыть</button>
-                            <button class="btn-action btn-reconnect" onclick="reconnect('${acc.id}')">🔄 Прокси</button>
+                            <button class="btn-action btn-reconnect" onclick="changeProxy('${acc.id}')">🔄 Прокси</button>
                         </div>
                     </div>
                     `;
@@ -104,10 +104,29 @@
             tg.openLink(link);
         }
 
-        // Обновленная функция для кнопки "Прокси"
-        function reconnect(accountId) {
-            tg.sendData(JSON.stringify({ action: "change_proxy", acc_id: accountId }));
-            tg.close();
+        // --- ФУНКЦИЯ СМЕНЫ ПРОКСИ ПРЯМО В ПАНЕЛИ ---
+        async function changeProxy(accountId) {
+            // Вызываем встроенное окно ввода
+            const newProxy = prompt("Введите новый прокси (формат: socks5://user:pass@ip:port):");
+            if (!newProxy) return;
+
+            try {
+                const res = await fetch(`${API_URL}/api/update_proxy`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ account_id: accountId, new_proxy: newProxy })
+                });
+                
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    tg.showAlert("✅ Прокси успешно обновлен!");
+                    fetchAccounts(); // Обновляем карточки без перезагрузки
+                } else {
+                    tg.showAlert("Ошибка: " + data.message);
+                }
+            } catch (e) {
+                tg.showAlert("Ошибка соединения: " + e.message);
+            }
         }
 
         document.addEventListener('DOMContentLoaded', () => { fetchAccounts(); });
