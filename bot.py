@@ -5,6 +5,7 @@ import zipfile
 import random
 import shutil
 import requests
+import time
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
@@ -46,12 +47,32 @@ def load_json(file_path, default):
 def save_json(file_path, data):
     with open(file_path, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
 
-def get_ip_country(ip):
+# --- ПРОВЕРКА ПРОКСИ И ОПРЕДЕЛЕНИЕ СТРАНЫ ---
+def check_proxy(proxy_str):
+    """
+    Проверяет прокси. Возвращает (is_alive, country_code, ping_ms).
+    """
     try:
-        r = requests.get(f"http://ip-api.com/json/{ip}?fields=status,countryCode", timeout=3)
-        if r.json().get("status") == "success": return r.json().get("countryCode")
-    except: pass
-    return "UNKNOWN"
+        # Парсим прокси для проверки через requests
+        if "socks" in proxy_str:
+            proxies = {'http': proxy_str, 'https': proxy_str}
+        else:
+            proxies = {'http': f'http://{proxy_str}', 'https': f'http://{proxy_str}'}
+        
+        # Замеряем пинг и проверяем доступность
+        start_time = time.time()
+        r = requests.get("http://ip-api.com/json/?fields=status,countryCode,query", 
+                         proxies=proxies, timeout=5)
+        ping_ms = int((time.time() - start_time) * 1000)
+        
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status") == "success":
+                return True, data.get("countryCode"), ping_ms
+    except Exception as e:
+        print(f"Прокси мертв: {e}")
+    
+    return False, "UNKNOWN", 0
 
 COUNTRY_NAMES = {
     "RU": "Россия", "UA": "Украина", "IT": "Италия", "DE": "Германия", 
@@ -113,26 +134,26 @@ async def handle_update_proxy(request):
         acc_id = data.get("account_id")
         new_proxy = data.get("new_proxy")
         
+        # Проверяем новый прокси перед сохранением
+        is_alive, country, ping = check_proxy(new_proxy)
+        if not is_alive:
+            return web.json_response({"status": "error", "message": "Прокси не работает"}, status=400)
+
         accounts = load_json(ACCOUNTS_FILE, [])
         acc = next((a for a in accounts if a["id"] == acc_id), None)
         
         if acc:
-            ip = new_proxy.split('@')[-1].split(':')[0] if '@' in new_proxy else new_proxy.split(':')[0]
-            country = get_ip_country(ip)
-            speed = random.randint(30, 150)
-            
             acc["proxy"] = new_proxy
             acc["proxy_country"] = COUNTRY_NAMES.get(country, "Неизвестно")
             acc["proxy_flag"] = FLAGS.get(country, "🏳️")
-            acc["ip"] = ip
-            acc["speed"] = speed
+            acc["speed"] = ping
             
             save_json(ACCOUNTS_FILE, accounts)
             return web.json_response({
                 "status": "ok",
                 "proxy_country": acc["proxy_country"],
                 "proxy_flag": acc["proxy_flag"],
-                "speed": speed
+                "speed": ping
             })
         return web.json_response({"status": "error", "message": "Аккаунт не найден"}, status=404)
     except Exception as e:
@@ -177,15 +198,20 @@ async def process_proxies(message: Message):
     if user_states.get(message.from_user.id) != "waiting_proxies": return
     user_states[message.from_user.id] = None
     
-    status_msg = await message.answer("⏳ Подключаюсь к аккаунтам. Жди (это займет время)...")
+    status_msg = await message.answer("⏳ Проверяю прокси и подключаюсь к аккаунтам. Жди...")
     
-    proxies = []
-    for line in message.text.strip().split('\n'):
-        line = line.strip()
-        if not line: continue
-        ip = line.split('@')[-1].split(':')[0] if '@' in line else line.split(':')[0]
-        country = get_ip_country(ip)
-        proxies.append({"raw": line, "country": country, "speed": random.randint(30, 150)})
+    raw_proxies = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
+    
+    valid_proxies = []
+    for p in raw_proxies:
+        is_alive, country, ping = check_proxy(p)
+        if is_alive:
+            valid_proxies.append({"raw": p, "country": country, "speed": ping})
+        else:
+            print(f"Прокси {p} отброшен (мертв)")
+
+    if not valid_proxies:
+        return await status_msg.edit_text("❌ Все прокси оказались нерабочими. Попробуй другие.")
 
     found_accounts = []
     processed_ids = set()
@@ -211,11 +237,11 @@ async def process_proxies(message: Message):
                 elif phone.startswith("39"): acc_country = "IT"
                 elif phone.startswith("49"): acc_country = "DE"
             
-            if acc_country == "UNKNOWN" and proxies:
-                acc_country = proxies[0]["country"]
+            if acc_country == "UNKNOWN":
+                acc_country = valid_proxies[0]["country"]
 
-            best_proxy = proxies[0] if proxies else {"raw": "Нет", "country": "UNKNOWN", "speed": 0}
-            matching = [p for p in proxies if p["country"] == acc_country]
+            best_proxy = valid_proxies[0]
+            matching = [p for p in valid_proxies if p["country"] == acc_country]
             if matching: best_proxy = matching[0]
 
             username = f"Аккаунт {format_phone(phone)}"
@@ -223,46 +249,44 @@ async def process_proxies(message: Message):
             premium_expires = "Нет"
             status = "❌ Ошибка"
 
-            if best_proxy["raw"] != "Нет":
-                try:
-                    acc = read_tdata(root)
-                    session_string = acc.to_string_session()
+            try:
+                acc = read_tdata(root)
+                session_string = acc.to_string_session()
+                
+                parsed = urlparse(best_proxy["raw"])
+                p_type = ProxyType.SOCKS5 if parsed.scheme == 'socks5' else ProxyType.SOCKS4 if parsed.scheme == 'socks4' else ProxyType.HTTP
+                proxy_tuple = (p_type, parsed.hostname, parsed.port, True, parsed.username, parsed.password)
+                
+                device = get_sticky_device(phone)
+                
+                client = TelegramClient(
+                    StringSession(session_string), acc.api_id, acc.api_hash, 
+                    device_model=device['model'], system_version=device['system'], 
+                    app_version=device['app'], proxy=proxy_tuple
+                )
+                
+                await client.connect()
+                
+                if await client.is_user_authorized():
+                    me = await client.get_me()
+                    username = me.username or me.first_name or f"Без имени"
                     
-                    parsed = urlparse(best_proxy["raw"])
-                    p_type = ProxyType.SOCKS5 if parsed.scheme == 'socks5' else ProxyType.SOCKS4 if parsed.scheme == 'socks4' else ProxyType.HTTP
-                    proxy_tuple = (p_type, parsed.hostname, parsed.port, True, parsed.username, parsed.password)
+                    full_user = await client(GetFullUserRequest(me.id))
+                    if full_user.full_user.premium_expires:
+                        premium = True
+                        premium_expires = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
                     
-                    device = get_sticky_device(phone)
-                    
-                    client = TelegramClient(
-                        StringSession(session_string), acc.api_id, acc.api_hash, 
-                        device_model=device['model'], system_version=device['system'], 
-                        app_version=device['app'], proxy=proxy_tuple
-                    )
-                    
-                    await client.connect()
-                    
-                    if await client.is_user_authorized():
-                        me = await client.get_me()
-                        username = me.username or me.first_name or f"Без имени"
-                        
-                        full_user = await client(GetFullUserRequest(me.id))
-                        if full_user.full_user.premium_expires:
-                            premium = True
-                            premium_expires = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
-                        
-                        status = "✅ Подключен"
-                    
-                    await client.disconnect()
-                except Exception as e:
-                    print(f"Ошибка аккаунта {phone}: {e}")
-                    status = f"❌ {str(e)[:20]}"
+                    status = "✅ Подключен"
+                
+                await client.disconnect()
+            except Exception as e:
+                print(f"Ошибка аккаунта {phone}: {e}")
+                status = f"❌ {str(e)[:20]}"
 
             country_name = COUNTRY_NAMES.get(acc_country, "Неизвестно")
             flag = FLAGS.get(acc_country, "🏳️")
             proxy_country_name = COUNTRY_NAMES.get(best_proxy["country"], "Неизвестно")
             proxy_flag = FLAGS.get(best_proxy["country"], "🏳️")
-            unique_ip = f"{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}.{random.randint(1, 255)}"
             device = get_sticky_device(phone)
             
             found_accounts.append({
@@ -273,7 +297,6 @@ async def process_proxies(message: Message):
                 "flag": flag,
                 "proxy_country": proxy_country_name,
                 "proxy_flag": proxy_flag,
-                "ip": unique_ip,
                 "speed": best_proxy["speed"],
                 "premium": premium, 
                 "premium_expires": premium_expires, 
