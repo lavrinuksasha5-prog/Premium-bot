@@ -32,7 +32,6 @@ dp = Dispatcher()
 
 data_dir = Path("/app/data")
 data_dir.mkdir(parents=True, exist_ok=True)
-# Папка sessions больше не нужна, но пусть будет
 SESSIONS_DIR = data_dir / "sessions"
 SESSIONS_DIR.mkdir(exist_ok=True)
 TDATA_DIR = data_dir / "tdata_backup"
@@ -222,7 +221,6 @@ async def handle_buy_premium(request):
         device = get_sticky_device(acc_id)
         proxy_url = acc.get("proxy")
         
-        # Работаем ТОЛЬКО с tdata из бэкапа. Никаких session файлов.
         tdata_path = TDATA_DIR / acc_id
         if not tdata_path.exists():
             return web.json_response({"status": "error", "message": "tdata не найдена в бэкапе"}, status=400)
@@ -445,7 +443,6 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
                 proxy=proxy_dict
             )
         else:
-            # Для pyrogram сессий пока заглушка
             return acc_record
 
         await asyncio.wait_for(client.connect(), timeout=20)
@@ -454,10 +451,13 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
             me = await client.get_me()
             acc_record["username"] = me.username or f"{me.first_name or ''} {me.last_name or ''}".strip() or f"Без имени"
             
-            full_user = await client(GetFullUserRequest(me.id))
-            if full_user.full_user.premium_expires:
-                acc_record["premium"] = True
-                acc_record["premium_expires"] = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
+            try:
+                full_user = await client(GetFullUserRequest(me.id))
+                if hasattr(full_user.full_user, 'premium_expires') and full_user.full_user.premium_expires:
+                    acc_record["premium"] = True
+                    acc_record["premium_expires"] = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
+            except Exception as e:
+                print(f"Не удалось проверить премиум {phone}: {e}")
             
             acc_record["status"] = "✅ Подключен"
             await client.disconnect()
