@@ -7,7 +7,6 @@ import shutil
 import requests
 import time
 import re
-import uuid
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
@@ -32,6 +31,9 @@ dp = Dispatcher()
 
 data_dir = Path("/app/data")
 data_dir.mkdir(parents=True, exist_ok=True)
+SESSIONS_DIR = data_dir / "sessions"
+SESSIONS_DIR.mkdir(exist_ok=True)
+
 ACCOUNTS_FILE = data_dir / "accounts.json"
 DEVICES_FILE = data_dir / "devices.json"
 WORK_DIR = data_dir / "work"
@@ -98,8 +100,7 @@ def check_proxy(proxy_str):
 def get_real_ip(proxy_url):
     try:
         r = requests.get("http://ip-api.com/json/?fields=query", proxies={'http': proxy_url, 'https': proxy_url}, timeout=5)
-        if r.status_code == 200:
-            return r.json().get("query", "0.0.0.0")
+        if r.status_code == 200: return r.json().get("query", "0.0.0.0")
     except: pass
     return "0.0.0.0"
 
@@ -113,22 +114,28 @@ def format_phone(phone_str):
     if len(digits) >= 11: return f"+{digits[0]} {digits[1:4]} {digits[4:7]}-{digits[7:9]}-{digits[9:11]}"
     return f"+{digits}"
 
-# --- УСТРОЙСТВА ---
-IPHONE_MODELS = ["iPhone 14 Pro", "iPhone 13", "iPhone 12", "iPhone 15 Pro Max"]
-ANDROID_MODELS = ["Samsung Galaxy S23", "Xiaomi 13 Pro", "Google Pixel 7", "OnePlus 11"]
-MAC_MODELS = ["MacBook Pro M2", "MacBook Air M1", "iMac 24"]
-WIN_MODELS = ["Desktop", "Laptop", "Custom PC"]
-APP_VERSIONS = ["9.6.0", "9.7.0", "10.0.0", "10.1.0"]
+# --- БАЗА РЕАЛЬНЫХ УСТРОЙСТВ ---
+IOS_MODELS = ["iPhone 11", "iPhone 11 Pro", "iPhone 12", "iPhone 12 Pro", "iPhone 12 Pro Max", "iPhone 13", "iPhone 13 Pro", "iPhone 13 Pro Max", "iPhone 14", "iPhone 14 Plus", "iPhone 14 Pro", "iPhone 14 Pro Max", "iPhone 15", "iPhone 15 Plus", "iPhone 15 Pro", "iPhone 15 Pro Max"]
+IOS_VERSIONS = ["15.7.1", "15.8", "16.0", "16.1.1", "16.2", "16.3.1", "16.4", "16.5", "16.6", "16.7.2", "17.0.1", "17.1.1", "17.2", "17.2.1"]
+IOS_APP_VERSIONS = ["9.5.1", "9.6.0", "9.6.3", "10.0.0", "10.0.1", "10.1.0", "10.2.0"]
+
+ANDROID_MODELS = ["Samsung Galaxy S21 Ultra", "Samsung Galaxy S22", "Samsung Galaxy S22 Ultra", "Samsung Galaxy S23", "Samsung Galaxy S23 Ultra", "Samsung Galaxy S24", "Xiaomi 11T Pro", "Xiaomi 12", "Xiaomi 13", "Xiaomi 13 Pro", "Xiaomi 14", "Poco F5", "Google Pixel 6", "Google Pixel 6 Pro", "Google Pixel 7", "Google Pixel 7 Pro", "Google Pixel 8", "OnePlus 9 Pro", "OnePlus 10 Pro", "OnePlus 11", "Huawei P40 Pro", "Huawei P50 Pro", "Honor Magic 5 Pro"]
+ANDROID_VERSIONS = ["11", "12", "12L", "13", "14"]
+ANDROID_APP_VERSIONS = ["9.5.1", "9.6.0", "9.6.3", "10.0.0", "10.0.1", "10.1.0", "10.2.0"]
+
+WIN_OS = ["Windows 10", "Windows 11"]
+MAC_OS = ["macOS 12.6", "macOS 13.1", "macOS 13.4", "macOS 14.0", "macOS 14.1"]
+DESKTOP_APP_VERSIONS = ["4.8.1", "4.8.10", "4.9.5", "4.10.1", "4.11.2", "4.12.0"]
 
 def generate_unique_device():
-    platform = random.choice(["ios", "android", "mac", "win"])
+    platform = random.choices(["ios", "android", "desktop"], weights=[40, 45, 15], k=1)[0]
     if platform == "ios":
-        return {"model": random.choice(IPHONE_MODELS), "system": f"iOS {random.choice(['16.0', '16.1.1', '17.0', '17.2'])}", "app": random.choice(APP_VERSIONS), "platform": "ios"}
+        return {"model": random.choice(IOS_MODELS), "system": f"iOS {random.choice(IOS_VERSIONS)}", "app": random.choice(IOS_APP_VERSIONS), "platform": "ios"}
     elif platform == "android":
-        return {"model": random.choice(ANDROID_MODELS), "system": f"Android {random.choice(['12', '13', '14'])}", "app": random.choice(APP_VERSIONS), "platform": "android"}
-    elif platform == "mac":
-        return {"model": random.choice(MAC_MODELS), "system": f"macOS {random.choice(['13.1', '14.0', '14.1'])}", "app": random.choice(APP_VERSIONS), "platform": "mac"}
-    return {"model": random.choice(WIN_MODELS), "system": random.choice(["Windows 10", "Windows 11"]), "app": random.choice(APP_VERSIONS), "platform": "win"}
+        return {"model": random.choice(ANDROID_MODELS), "system": f"Android {random.choice(ANDROID_VERSIONS)}", "app": random.choice(ANDROID_APP_VERSIONS), "platform": "android"}
+    else:
+        is_mac = random.choice([True, False])
+        return {"model": "MacBook Pro" if is_mac else random.choice(["Desktop", "Laptop", "Custom PC"]), "system": random.choice(MAC_OS) if is_mac else random.choice(WIN_OS), "app": random.choice(DESKTOP_APP_VERSIONS), "platform": "mac" if is_mac else "win"}
 
 def get_sticky_device(acc_id):
     devices = load_json(DEVICES_FILE, {})
@@ -157,6 +164,8 @@ async def handle_delete_account(request):
         accounts = load_json(ACCOUNTS_FILE, [])
         accounts = [a for a in accounts if a["id"] != acc_id]
         save_json(ACCOUNTS_FILE, accounts)
+        session_path = SESSIONS_DIR / f"{acc_id}.session"
+        if session_path.exists(): session_path.unlink()
         return web.json_response({"status": "ok"})
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
@@ -191,6 +200,90 @@ async def handle_index(request):
     html_path = Path(__file__).parent / "index.html"
     if html_path.exists(): return web.FileResponse(html_path)
     return web.Response(text="Ошибка: index.html не найден", status=404)
+
+# --- ЛОГИКА ПОКУПКИ ПРЕМИУМА ---
+async def handle_buy_premium(request):
+    try:
+        data = await request.json()
+        acc_id = data.get("account_id")
+        
+        accounts = load_json(ACCOUNTS_FILE, [])
+        acc = next((a for a in accounts if a["id"] == acc_id), None)
+        if not acc:
+            return web.json_response({"status": "error", "message": "Аккаунт не найден"}, status=404)
+
+        device = get_sticky_device(acc_id)
+        proxy_url = acc.get("proxy")
+        
+        session_path = SESSIONS_DIR / f"{acc_id}.session"
+        if not session_path.exists():
+            return web.json_response({"status": "error", "message": "Сессия не найдена. Перезагрузите аккаунт."}, status=400)
+
+        parsed_proxy = urlparse(proxy_url)
+        proxy_str = f"socks5://{parsed_proxy.username}:{parsed_proxy.password}@{parsed_proxy.hostname}:{parsed_proxy.port}"
+        
+        client = TelegramClient(
+            str(session_path), 
+            api_id=2040, 
+            api_hash="b18441a1ff607e10a989891a5462e627",
+            device_model=device['model'], 
+            system_version=device['system'], 
+            app_version=device['app'], 
+            proxy=proxy_str
+        )
+        
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.disconnect()
+            return web.json_response({"status": "error", "message": "Сессия недействительна"}, status=401)
+        
+        bot_username = "PremiumBot"
+        try:
+            bot_entity = await client.get_entity(bot_username)
+            await client.send_message(bot_entity, "/start")
+            await asyncio.sleep(2)
+            
+            messages = await client.get_messages(bot_entity, limit=1)
+            if not messages:
+                await client.disconnect()
+                return web.json_response({"status": "error", "message": "Бот не ответил"}, status=500)
+                
+            msg = messages[0]
+            payment_link = None
+            
+            if msg.reply_markup and msg.reply_markup.rows:
+                for row in msg.reply_markup.rows:
+                    for button in row.buttons:
+                        if "Premium" in button.text or "Купить" in button.text or "Купить" in button.text:
+                            await msg.click(text=button.text)
+                            break
+                            
+            await asyncio.sleep(2)
+            new_messages = await client.get_messages(bot_entity, limit=1)
+            if new_messages:
+                text = new_messages[0].text or ""
+                if "http" in text:
+                    payment_link = text
+                elif new_messages[0].reply_markup:
+                    for row in new_messages[0].reply_markup.rows:
+                        for btn in row.buttons:
+                            if hasattr(btn, 'url') and btn.url:
+                                payment_link = btn.url
+                                break
+            
+            await client.disconnect()
+            
+            if payment_link:
+                return web.json_response({"status": "ok", "link": payment_link})
+            else:
+                return web.json_response({"status": "error", "message": "Ссылка на оплату не найдена"}, status=500)
+                
+        except Exception as e:
+            await client.disconnect()
+            return web.json_response({"status": "error", "message": f"Ошибка при заходе в бота: {str(e)}"}, status=500)
+            
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -242,15 +335,13 @@ async def process_proxies(message: Message):
     found_accounts = []
     processed_ids = set()
 
-    # НОВЫЙ АЛГОРИТМ ПОИСКА (Ищет папку tdata и берет имя родительской папки как телефон)
+    # Парсим tdata
     for root, dirs, files in os.walk(WORK_DIR):
         if "key_datas" in files:
             path_parts = root.split(os.sep)
             phone = "UNKNOWN"
-            
-            # Берем номер из родительской папки
             for part in reversed(path_parts):
-                if part.isdigit() and len(part) > 7:
+                if part.isdigit() and len(part) > 7: 
                     phone = part
                     break
                 elif part not in ["tdata", "work", "data", "app"]:
@@ -258,7 +349,6 @@ async def process_proxies(message: Message):
 
             if phone in processed_ids: continue
             
-            # Определяем страну по коду номера
             acc_country = "UNKNOWN"
             if phone.isdigit():
                 if phone.startswith("90"): acc_country = "TR"
@@ -274,7 +364,6 @@ async def process_proxies(message: Message):
             matching = [p for p in valid_proxies if p["country"] == acc_country]
             if matching: best_proxy = matching[0]
 
-            # Передаем ПУТЬ К ПАПКЕ tdata, а не к файлу key_datas
             acc_data = await parse_account_data(root, "tdata", phone, acc_country, best_proxy)
             if acc_data:
                 found_accounts.append(acc_data)
@@ -314,17 +403,26 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
 
     try:
         parsed_proxy = urlparse(best_proxy['raw'])
-        p_type = ProxyType.SOCKS5 if parsed_proxy.scheme == 'socks5' else ProxyType.HTTP
-        proxy_tuple = (p_type, parsed_proxy.hostname, parsed_proxy.port, True, parsed_proxy.username, parsed_proxy.password)
+        proxy_str = f"socks5://{parsed_proxy.username}:{parsed_proxy.password}@{parsed_proxy.hostname}:{parsed_proxy.port}"
 
+        session_path = SESSIONS_DIR / f"{phone}.session"
+        
         if acc_type == "tdata":
             acc = read_tdata(path)
-            session = StringSession(acc.to_string_session())
-            client = TelegramClient(session, acc.api_id, acc.api_hash, device_model=device['model'], system_version=device['system'], app_version=device['app'], proxy=proxy_tuple)
+            client = TelegramClient(
+                str(session_path), 
+                acc.api_id, acc.api_hash, 
+                device_model=device['model'], system_version=device['system'], app_version=device['app'], 
+                proxy=proxy_str
+            )
         else:
-            client = TelegramClient(path, api_id=0, api_hash="", device_model=device['model'], system_version=device['system'], app_version=device['app'], proxy=proxy_tuple)
+            client = TelegramClient(
+                str(session_path), api_id=0, api_hash="", 
+                device_model=device['model'], system_version=device['system'], app_version=device['app'], 
+                proxy=proxy_str
+            )
 
-        await asyncio.wait_for(client.connect(), timeout=10)
+        await asyncio.wait_for(client.connect(), timeout=15)
         
         if await client.is_user_authorized():
             me = await client.get_me()
@@ -336,14 +434,15 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
                 acc_record["premium_expires"] = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
             
             acc_record["status"] = "✅ Подключен"
-        
-        await client.disconnect()
-        
+            await client.disconnect()
+        else:
+            acc_record["status"] = "❌ Не авторизован"
+            
     except asyncio.TimeoutError:
         acc_record["status"] = "❌ Таймаут прокси"
         print(f"Таймаут {phone}")
     except Exception as e:
-        acc_record["status"] = f"❌ Ошибка: {str(e)[:30]}"
+        acc_record["status"] = f"❌ {str(e)[:30]}"
         print(f"Ошибка {phone}: {e}")
 
     return acc_record
@@ -353,6 +452,7 @@ async def main():
     app.router.add_get('/api/accounts', handle_get_accounts)
     app.router.add_post('/api/update_proxy', handle_update_proxy)
     app.router.add_post('/api/delete_account', handle_delete_account)
+    app.router.add_post('/api/buy_premium', handle_buy_premium) # Новый роут
     app.router.add_get('/', handle_index) 
     
     runner = web.AppRunner(app)
