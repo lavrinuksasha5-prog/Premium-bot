@@ -17,11 +17,9 @@ from aiogram.filters import Command
 from aiohttp import web
 
 from telethon import TelegramClient
-from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
-from tdata_reader import read_tdata
-from python_socks import ProxyType
-from python_socks.sync import Proxy
+from opentele.td import TDesktop
+from opentele.api import API, UseCurrentSession
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
@@ -33,6 +31,8 @@ data_dir = Path("/app/data")
 data_dir.mkdir(parents=True, exist_ok=True)
 SESSIONS_DIR = data_dir / "sessions"
 SESSIONS_DIR.mkdir(exist_ok=True)
+TDATA_DIR = data_dir / "tdata_backup"
+TDATA_DIR.mkdir(exist_ok=True)
 
 ACCOUNTS_FILE = data_dir / "accounts.json"
 DEVICES_FILE = data_dir / "devices.json"
@@ -164,8 +164,13 @@ async def handle_delete_account(request):
         accounts = load_json(ACCOUNTS_FILE, [])
         accounts = [a for a in accounts if a["id"] != acc_id]
         save_json(ACCOUNTS_FILE, accounts)
+        
         session_path = SESSIONS_DIR / f"{acc_id}.session"
         if session_path.exists(): session_path.unlink()
+        
+        tdata_path = TDATA_DIR / acc_id
+        if tdata_path.exists(): shutil.rmtree(tdata_path)
+        
         return web.json_response({"status": "ok"})
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
@@ -216,7 +221,7 @@ async def handle_buy_premium(request):
         
         session_path = SESSIONS_DIR / f"{acc_id}.session"
         if not session_path.exists():
-            return web.json_response({"status": "error", "message": "Сессия не найдена. Перезагрузите аккаунт."}, status=400)
+            return web.json_response({"status": "error", "message": "Нет сессии. Перезагрузите аккаунт."}, status=400)
 
         parsed_proxy = urlparse(proxy_url)
         proxy_dict = {
@@ -238,16 +243,18 @@ async def handle_buy_premium(request):
             proxy=proxy_dict
         )
         
-        await client.connect()
+        # Даем 25 секунд на подключение, так как прокси может тупить
+        await asyncio.wait_for(client.connect(), timeout=25)
+        
         if not await client.is_user_authorized():
             await client.disconnect()
-            return web.json_response({"status": "error", "message": "Сессия недействительна"}, status=401)
+            return web.json_response({"status": "error", "message": "Аккаунт разлогинен или забанен"}, status=401)
         
-        bot_username = "PremiumBot"
         try:
-            bot_entity = await client.get_entity(bot_username)
+            # Ищем @PremiumBot
+            bot_entity = await client.get_entity("PremiumBot")
             await client.send_message(bot_entity, "/start")
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
             messages = await client.get_messages(bot_entity, limit=1)
             if not messages:
@@ -262,9 +269,9 @@ async def handle_buy_premium(request):
                     for button in row.buttons:
                         if "Premium" in button.text or "Купить" in button.text:
                             await msg.click(text=button.text)
+                            await asyncio.sleep(3)
                             break
                             
-            await asyncio.sleep(2)
             new_messages = await client.get_messages(bot_entity, limit=1)
             if new_messages:
                 text = new_messages[0].text or ""
@@ -282,12 +289,14 @@ async def handle_buy_premium(request):
             if payment_link:
                 return web.json_response({"status": "ok", "link": payment_link})
             else:
-                return web.json_response({"status": "error", "message": "Ссылка на оплату не найдена"}, status=500)
+                return web.json_response({"status": "error", "message": "Ссылка на оплату не найдена (возможно, уже есть премиум)"}, status=500)
                 
         except Exception as e:
             await client.disconnect()
-            return web.json_response({"status": "error", "message": f"Ошибка при заходе в бота: {str(e)}"}, status=500)
+            return web.json_response({"status": "error", "message": f"Ошибка в боте: {str(e)}"}, status=500)
             
+    except asyncio.TimeoutError:
+        return web.json_response({"status": "error", "message": "Таймаут прокси"}, status=504)
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
@@ -325,7 +334,7 @@ async def process_proxies(message: Message):
     if user_states.get(message.from_user.id) != "waiting_proxies": return
     user_states[message.from_user.id] = None
     
-    status_msg = await message.answer("⏳ Проверяю прокси и подключаюсь к аккаунтам. Жди...")
+    status_msg = await message.answer("⏳ Проверяю прокси и конвертирую сессии. Жди...")
     
     raw_proxies = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
     valid_proxies = []
@@ -369,6 +378,7 @@ async def process_proxies(message: Message):
             matching = [p for p in valid_proxies if p["country"] == acc_country]
             if matching: best_proxy = matching[0]
 
+            # Конвертация tdata и парсинг
             acc_data = await parse_account_data(root, "tdata", phone, acc_country, best_proxy)
             if acc_data:
                 found_accounts.append(acc_data)
@@ -383,7 +393,6 @@ async def process_proxies(message: Message):
     web_app = WebAppInfo(url="https://worker-production-578b44ee.up.railway.app/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 Открыть панель", web_app=web_app)]], resize_keyboard=True)
     
-    # ФИКС: send_message вместо edit_text для кнопок
     await status_msg.delete()
     await message.answer(f"✅ Обработано: {len(found_accounts)}.\nОткрывай панель:", reply_markup=kb)
 
@@ -410,7 +419,6 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
 
     try:
         parsed_proxy = urlparse(best_proxy['raw'])
-        # ФИКС: Прокси теперь словарь, а не строка
         proxy_dict = {
             'proxy_type': 'socks5',
             'addr': parsed_proxy.hostname,
@@ -421,14 +429,26 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
         }
 
         session_path = SESSIONS_DIR / f"{phone}.session"
-        
+        tdata_backup_path = TDATA_DIR / phone
+
+        # Делаем бэкап tdata, чтобы всегда можно было пересоздать
+        if not tdata_backup_path.exists():
+            shutil.copytree(path, tdata_backup_path)
+
         if acc_type == "tdata":
-            acc = read_tdata(path)
-            client = TelegramClient(
-                str(session_path), 
-                acc.api_id, acc.api_hash, 
-                device_model=device['model'], system_version=device['system'], app_version=device['app'], 
-                proxy=proxy_dict
+            # ИСПОЛЬЗУЕМ OPENTELE ДЛЯ КОНВЕРТАЦИИ
+            tdesk = TDesktop(path)
+            if not tdesk.isLoaded():
+                acc_record["status"] = "❌ tdata не загружена"
+                return acc_record
+            
+            # Конвертируем в Telethon Session
+            client = await tdesk.ToTelethon(
+                session=str(session_path),
+                flag=UseCurrentSession,
+                api=API.TelegramDesktop.Generate(system="windows", unique_id=str(uuid.uuid4())[:8]),
+                proxy=proxy_dict,
+                timeout=25
             )
         else:
             client = TelegramClient(
@@ -436,9 +456,9 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
                 device_model=device['model'], system_version=device['system'], app_version=device['app'], 
                 proxy=proxy_dict
             )
+            await asyncio.wait_for(client.connect(), timeout=25)
 
-        await asyncio.wait_for(client.connect(), timeout=15)
-        
+        # Если подключились
         if await client.is_user_authorized():
             me = await client.get_me()
             acc_record["username"] = me.username or f"{me.first_name or ''} {me.last_name or ''}".strip() or f"Без имени"
