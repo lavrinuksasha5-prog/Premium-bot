@@ -122,3 +122,170 @@
                                 <div class="acc-phone">${acc.phone}</div>
                             </div>
                             <div class="header-right">
+                                <div class="badge ${statusClass}">${statusText}</div>
+                                <button class="btn-delete" onclick="deleteAcc('${acc.id}')">🗑</button>
+                            </div>
+                        </div>
+                        
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <span class="info-label">Аккаунт (Страна)</span>
+                                <span class="info-value">${acc.flag || '🏳️'} ${acc.account_country || 'Неизвестно'}</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">Прокси (Страна)</span>
+                                <span class="info-value" id="proxy-info-${acc.id}">${acc.proxy_flag || '🏳️'} ${acc.proxy_country || 'Неизвестно'} (⚡${acc.speed} ms)</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">Premium</span>
+                                <span class="info-value" style="color: ${premColor};">${premText}</span>
+                            </div>
+                            <div class="info-item">
+                                <span class="info-label">IP адрес</span>
+                                <span class="info-value">${acc.ip || '0.0.0.0'}</span>
+                            </div>
+                        </div>
+
+                        <div class="proxy-box" onclick="copyProxy('${acc.proxy}')">
+                            <span class="proxy-text">${proxyDisplay}</span>
+                            <span style="color: var(--hint);">📋</span>
+                        </div>
+
+                        <div class="actions">
+                            <button class="btn-action btn-buy" onclick="buyPremium('${acc.id}')">💎 Купить</button>
+                            <button class="btn-action btn-open" onclick="openBot('${acc.username}')">📱 Открыть</button>
+                            <button class="btn-action btn-reconnect" onclick="openModal('${acc.id}')">🔄 Прокси</button>
+                        </div>
+                        
+                        <div class="footer-fp">FP: ${acc.device_fp || 'unknown'}</div>
+                    </div>
+                    `;
+                }).join("");
+            } catch (e) { 
+                document.getElementById('accounts-list').innerHTML = `<div style='text-align:center; color:var(--danger); margin-top:20px;'>Ошибка: ${e.message}</div>`;
+            }
+        }
+
+        function copyProxy(proxy) {
+            if (!proxy || proxy === "Нет" || proxy === "Не назначен") return;
+            navigator.clipboard.writeText(proxy).then(() => {
+                tg.showAlert("✅ Прокси скопирован!");
+            }).catch(() => {
+                tg.showAlert("❌ Ошибка копирования");
+            });
+        }
+
+        async function deleteAcc(accId) {
+            tg.showPopup({
+                title: 'Удаление',
+                message: 'Точно удалить этот аккаунт?',
+                buttons: [{id: 'yes', type: 'destructive', text: 'Удалить'}, {id: 'cancel', type: 'cancel'}]
+            }, async function(btnId) {
+                if (btnId === 'yes') {
+                    try {
+                        const res = await fetch(`${API_URL}/api/delete_account`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ account_id: accId })
+                        });
+                        if (res.ok) document.getElementById(`card-${accId}`).remove();
+                    } catch(e) { tg.showAlert("Ошибка сети"); }
+                }
+            });
+        }
+
+        function openModal(accountId) {
+            currentAccountId = accountId;
+            document.getElementById('newProxyInput').value = "";
+            document.getElementById('proxyModal').style.display = 'flex';
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+        }
+
+        async function saveProxy() {
+            const newProxy = document.getElementById('newProxyInput').value.trim();
+            if (!newProxy) return tg.showAlert("Введите прокси");
+
+            const btn = document.getElementById('saveBtn');
+            btn.innerText = "Проверка...";
+            btn.disabled = true;
+
+            try {
+                const res = await fetch(`${API_URL}/api/update_proxy`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ account_id: currentAccountId, new_proxy: newProxy })
+                });
+                
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    tg.showAlert("✅ Прокси обновлен!");
+                    closeModal('proxyModal');
+                    
+                    document.getElementById('proxy-info-' + currentAccountId).innerHTML = `${data.proxy_flag} ${data.proxy_country} (⚡${data.speed} ms)`;
+                    const card = document.getElementById('card-' + currentAccountId);
+                    card.querySelector('.proxy-text').innerText = newProxy;
+                    card.querySelectorAll('.info-value')[3].innerText = data.ip;
+                } else {
+                    tg.showAlert("Ошибка: " + data.message);
+                }
+            } catch (e) {
+                tg.showAlert("Ошибка соединения: " + e.message);
+            } finally {
+                btn.innerText = "Сохранить";
+                btn.disabled = false;
+            }
+        }
+
+        async function buyPremium(accountId) {
+            document.getElementById('payContent').innerHTML = `
+                <div class="spinner"></div>
+                <h3>Заходим в @PremiumBot...</h3>
+                <p style="font-size:12px; color:var(--hint);">Это займет пару секунд.</p>
+            `;
+            document.getElementById('payModal').style.display = 'flex';
+
+            try {
+                const res = await fetch(`${API_URL}/api/buy_premium`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ account_id: accountId })
+                });
+                const data = await res.json();
+                
+                if (data.status === 'ok' && data.link) {
+                    document.getElementById('payContent').innerHTML = `
+                        <h3 style="color: var(--success);">✅ Успешно!</h3>
+                        <p style="font-size:12px;">Бот сгенерировал ссылку на оплату.</p>
+                        <button class="modal-btn btn-buy" onclick="window.open('${data.link}', '_blank'); closeModal('payModal');">Перейти к оплате</button>
+                    `;
+                } else {
+                    document.getElementById('payContent').innerHTML = `
+                        <h3 style="color: var(--danger);">❌ Ошибка</h3>
+                        <p style="font-size:12px;">${data.message || 'Не удалось получить ссылку.'}</p>
+                        <button class="modal-btn" style="background: var(--hint); color: #fff;" onclick="closeModal('payModal')">Закрыть</button>
+                    `;
+                }
+            } catch (e) {
+                document.getElementById('payContent').innerHTML = `
+                    <h3 style="color: var(--danger);">❌ Сеть</h3>
+                    <p style="font-size:12px;">Ошибка соединения с сервером.</p>
+                    <button class="modal-btn" style="background: var(--hint); color: #fff;" onclick="closeModal('payModal')">Закрыть</button>
+                `;
+            }
+        }
+
+        function openBot(username) {
+            if (!username || username.startsWith('Аккаунт') || username.startsWith('Без имени')) {
+                tg.showAlert("У этого аккаунта нет юзернейма.");
+                return;
+            }
+            tg.openLink(`https://t.me/${username}`);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => { fetchAccounts(); });
+    </script>
+</body>
+</html>
