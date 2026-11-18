@@ -18,7 +18,7 @@ from aiogram.filters import Command
 from aiohttp import web
 
 from telethon import TelegramClient
-from telethon.sessions import StringSession, SQLiteSession
+from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
 from tdata_reader import read_tdata
 from python_socks import ProxyType
@@ -104,8 +104,8 @@ def get_real_ip(proxy_url):
     return "0.0.0.0"
 
 # --- СЛОВАРИ ---
-COUNTRY_NAMES = {"RU": "Россия", "UA": "Украина", "IT": "Италия", "DE": "Германия", "FR": "Франция", "US": "США", "GB": "Великобритания", "ES": "Испания", "PL": "Польша", "TR": "Турция", "KZ": "Казахстан", "UNKNOWN": "Неизвестно"}
-FLAGS = {"RU": "🇷🇺", "UA": "🇺🇦", "IT": "🇮🇹", "DE": "🇩🇪", "FR": "🇫🇷", "US": "🇺🇸", "GB": "🇬🇧", "ES": "🇪🇸", "PL": "🇵🇱", "TR": "🇹🇷", "KZ": "🇰🇿", "UNKNOWN": "🏳️"}
+COUNTRY_NAMES = {"RU": "Россия", "UA": "Украина", "IT": "Италия", "DE": "Германия", "FR": "Франция", "US": "США", "GB": "Великобритания", "ES": "Испания", "PL": "Польша", "TR": "Турция", "KZ": "Казахстан", "PT": "Португалия", "UNKNOWN": "Неизвестно"}
+FLAGS = {"RU": "🇷🇺", "UA": "🇺🇦", "IT": "🇮🇹", "DE": "🇩🇪", "FR": "🇫🇷", "US": "🇺🇸", "GB": "🇬🇧", "ES": "🇪🇸", "PL": "🇵🇱", "TR": "🇹🇷", "KZ": "🇰🇿", "PT": "🇵🇹", "UNKNOWN": "🏳️"}
 
 def format_phone(phone_str):
     digits = ''.join(filter(str.isdigit, phone_str))
@@ -149,6 +149,17 @@ async def handle_get_accounts(request):
     response = web.json_response(load_json(ACCOUNTS_FILE, []))
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
+
+async def handle_delete_account(request):
+    try:
+        data = await request.json()
+        acc_id = data.get("account_id")
+        accounts = load_json(ACCOUNTS_FILE, [])
+        accounts = [a for a in accounts if a["id"] != acc_id]
+        save_json(ACCOUNTS_FILE, accounts)
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 async def handle_update_proxy(request):
     try:
@@ -231,13 +242,15 @@ async def process_proxies(message: Message):
     found_accounts = []
     processed_ids = set()
 
-    # 1. Ищем tdata
+    # НОВЫЙ АЛГОРИТМ ПОИСКА (Ищет папку tdata и берет имя родительской папки как телефон)
     for root, dirs, files in os.walk(WORK_DIR):
-        if "key_datas" in files or "key_d" in files:
+        if "key_datas" in files:
             path_parts = root.split(os.sep)
             phone = "UNKNOWN"
+            
+            # Берем номер из родительской папки
             for part in reversed(path_parts):
-                if part.isdigit() and len(part) > 7: 
+                if part.isdigit() and len(part) > 7:
                     phone = part
                     break
                 elif part not in ["tdata", "work", "data", "app"]:
@@ -245,12 +258,14 @@ async def process_proxies(message: Message):
 
             if phone in processed_ids: continue
             
+            # Определяем страну по коду номера
             acc_country = "UNKNOWN"
             if phone.isdigit():
                 if phone.startswith("90"): acc_country = "TR"
                 elif phone.startswith("380"): acc_country = "UA"
                 elif phone.startswith("39"): acc_country = "IT"
                 elif phone.startswith("49"): acc_country = "DE"
+                elif phone.startswith("351"): acc_country = "PT"
             
             if acc_country == "UNKNOWN":
                 acc_country = valid_proxies[0]["country"]
@@ -259,41 +274,11 @@ async def process_proxies(message: Message):
             matching = [p for p in valid_proxies if p["country"] == acc_country]
             if matching: best_proxy = matching[0]
 
+            # Передаем ПУТЬ К ПАПКЕ tdata, а не к файлу key_datas
             acc_data = await parse_account_data(root, "tdata", phone, acc_country, best_proxy)
             if acc_data:
                 found_accounts.append(acc_data)
                 processed_ids.add(phone)
-
-    # 2. Ищем session / json (Pyrogram)
-    for root, dirs, files in os.walk(WORK_DIR):
-        for file in files:
-            if file.endswith(".session") and file + ".json" in files:
-                session_name = file.replace(".session", "")
-                json_path = os.path.join(root, file + ".json")
-                session_path = os.path.join(root, file)
-                
-                if session_name in processed_ids: continue
-                
-                try:
-                    with open(json_path, 'r') as f: data = json.load(f)
-                    phone = data.get("phone", session_name)
-                    if phone in processed_ids: continue
-                    
-                    acc_country = valid_proxies[0]["country"]
-                    if phone.isdigit():
-                        if phone.startswith("90"): acc_country = "TR"
-                        elif phone.startswith("380"): acc_country = "UA"
-                    
-                    best_proxy = valid_proxies[0]
-                    matching = [p for p in valid_proxies if p["country"] == acc_country]
-                    if matching: best_proxy = matching[0]
-
-                    acc_data = await parse_account_data(session_path, "pyrogram", phone, acc_country, best_proxy)
-                    if acc_data:
-                        found_accounts.append(acc_data)
-                        processed_ids.add(phone)
-                except Exception as e:
-                    print(f"Ошибка парсинга Pyrogram: {e}")
 
     save_json(ACCOUNTS_FILE, found_accounts)
     
@@ -307,17 +292,28 @@ async def process_proxies(message: Message):
     await status_msg.edit_text(f"✅ Обработано: {len(found_accounts)}.\nОткрывай панель:", reply_markup=kb)
 
 async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
-    try:
-        device = get_sticky_device(phone)
-        
-        # Формируем Sticky прокси для аккаунта (если провайдер поддерживает сессии)
-        sticky_login = f"{urlparse(best_proxy['raw']).username}-session-{uuid.uuid4().hex[:6]}" if urlparse(best_proxy['raw']).username else None
-        sticky_proxy_url = best_proxy['raw']
-        if sticky_login:
-            parsed = urlparse(best_proxy['raw'])
-            sticky_proxy_url = f"{parsed.scheme}://{sticky_login}:{parsed.password}@{parsed.hostname}:{parsed.port}"
+    device = get_sticky_device(phone)
+    
+    acc_record = {
+        "id": phone, 
+        "username": f"Аккаунт {format_phone(phone)}", 
+        "phone": format_phone(phone), 
+        "account_country": COUNTRY_NAMES.get(acc_country, "Неизвестно"), 
+        "flag": FLAGS.get(acc_country, "🏳️"),
+        "proxy_country": COUNTRY_NAMES.get(best_proxy["country"], "Неизвестно"),
+        "proxy_flag": FLAGS.get(best_proxy["country"], "🏳️"),
+        "speed": best_proxy["speed"] + random.randint(1, 15),
+        "premium": False, 
+        "premium_expires": "Нет", 
+        "device": f"{device['model']} ({device['system']})", 
+        "device_fp": f"{device['platform']}_{device['app']}", 
+        "proxy": best_proxy['raw'],
+        "ip": get_real_ip(best_proxy['raw']),
+        "status": "❌ Ошибка подключения"
+    }
 
-        parsed_proxy = urlparse(sticky_proxy_url)
+    try:
+        parsed_proxy = urlparse(best_proxy['raw'])
         p_type = ProxyType.SOCKS5 if parsed_proxy.scheme == 'socks5' else ProxyType.HTTP
         proxy_tuple = (p_type, parsed_proxy.hostname, parsed_proxy.port, True, parsed_proxy.username, parsed_proxy.password)
 
@@ -328,57 +324,35 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
         else:
             client = TelegramClient(path, api_id=0, api_hash="", device_model=device['model'], system_version=device['system'], app_version=device['app'], proxy=proxy_tuple)
 
-        await client.connect()
+        await asyncio.wait_for(client.connect(), timeout=10)
         
-        username = f"Аккаунт {format_phone(phone)}"
-        premium = False
-        premium_expires = "Нет"
-        status = "❌ Ошибка"
-        real_ip = get_real_ip(sticky_proxy_url)
-
         if await client.is_user_authorized():
             me = await client.get_me()
-            username = me.username or f"{me.first_name or ''} {me.last_name or ''}".strip() or f"Без имени"
+            acc_record["username"] = me.username or f"{me.first_name or ''} {me.last_name or ''}".strip() or f"Без имени"
             
             full_user = await client(GetFullUserRequest(me.id))
             if full_user.full_user.premium_expires:
-                premium = True
-                premium_expires = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
+                acc_record["premium"] = True
+                acc_record["premium_expires"] = datetime.fromtimestamp(full_user.full_user.premium_expires).strftime("%d.%m.%Y")
             
-            status = "✅ Подключен"
+            acc_record["status"] = "✅ Подключен"
         
         await client.disconnect()
         
-        country_name = COUNTRY_NAMES.get(acc_country, "Неизвестно")
-        flag = FLAGS.get(acc_country, "🏳️")
-        proxy_country_name = COUNTRY_NAMES.get(best_proxy["country"], "Неизвестно")
-        proxy_flag = FLAGS.get(best_proxy["country"], "🏳️")
-        
-        return {
-            "id": phone, 
-            "username": username, 
-            "phone": format_phone(phone), 
-            "account_country": country_name, 
-            "flag": flag,
-            "proxy_country": proxy_country_name,
-            "proxy_flag": proxy_flag,
-            "speed": best_proxy["speed"] + random.randint(1, 15),
-            "premium": premium, 
-            "premium_expires": premium_expires, 
-            "device": f"{device['model']} ({device['system']})", 
-            "device_fp": f"{device['platform']}_{device['app']}", # Фингерпринт
-            "proxy": sticky_proxy_url,
-            "ip": real_ip,
-            "status": status
-        }
+    except asyncio.TimeoutError:
+        acc_record["status"] = "❌ Таймаут прокси"
+        print(f"Таймаут {phone}")
     except Exception as e:
-        print(f"Ошибка подключения {phone}: {e}")
-        return None
+        acc_record["status"] = f"❌ Ошибка: {str(e)[:30]}"
+        print(f"Ошибка {phone}: {e}")
+
+    return acc_record
 
 async def main():
     app = web.Application(client_max_size=1024**3, middlewares=[cors_middleware])
     app.router.add_get('/api/accounts', handle_get_accounts)
     app.router.add_post('/api/update_proxy', handle_update_proxy)
+    app.router.add_post('/api/delete_account', handle_delete_account)
     app.router.add_get('/', handle_index) 
     
     runner = web.AppRunner(app)
