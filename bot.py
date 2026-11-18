@@ -32,6 +32,7 @@ dp = Dispatcher()
 
 data_dir = Path("/app/data")
 data_dir.mkdir(parents=True, exist_ok=True)
+# Папка sessions больше не нужна, но пусть будет
 SESSIONS_DIR = data_dir / "sessions"
 SESSIONS_DIR.mkdir(exist_ok=True)
 TDATA_DIR = data_dir / "tdata_backup"
@@ -44,7 +45,6 @@ WORK_DIR.mkdir(exist_ok=True)
 TEMP_ZIP = data_dir / "temp.zip"
 
 user_states = {}
-active_clients = {}
 
 def load_json(file_path, default):
     if file_path.exists():
@@ -80,7 +80,7 @@ def check_proxy(proxy_str):
     start_time = time.time()
     try:
         r = requests.get("http://ip-api.com/json/?fields=status,countryCode,query", 
-                         proxies=proxy_dict, timeout=12)
+                         proxies=proxy_dict, timeout=15)
         if r.status_code == 200 and r.json().get("status") == "success":
             ping_ms = int((time.time() - start_time) * 1000)
             real_country = r.json().get("countryCode")
@@ -95,7 +95,7 @@ def check_proxy(proxy_str):
             host=parsed.hostname, port=parsed.port, 
             username=parsed.username, password=parsed.password
         )
-        conn = proxy.connect(dest_host='149.154.167.51', dest_port=443, timeout=12)
+        conn = proxy.connect(dest_host='149.154.167.51', dest_port=443, timeout=15)
         conn.close()
         ping_ms = int((time.time() - start_time) * 1000)
         return True, country, ping_ms
@@ -171,8 +171,6 @@ async def handle_delete_account(request):
         accounts = [a for a in accounts if a["id"] != acc_id]
         save_json(ACCOUNTS_FILE, accounts)
         
-        session_path = SESSIONS_DIR / f"{acc_id}.session"
-        if session_path.exists(): session_path.unlink()
         tdata_path = TDATA_DIR / acc_id
         if tdata_path.exists(): shutil.rmtree(tdata_path)
         
@@ -224,36 +222,16 @@ async def handle_buy_premium(request):
         device = get_sticky_device(acc_id)
         proxy_url = acc.get("proxy")
         
-        session_path = SESSIONS_DIR / f"{acc_id}.session"
-        
-        # Чистим лок файлы, если есть
-        for suffix in ["-journal", "-wal", "-shm"]:
-            lock_file = Path(str(session_path) + suffix)
-            if lock_file.exists():
-                try: lock_file.unlink()
-                except: pass
+        # Работаем ТОЛЬКО с tdata из бэкапа. Никаких session файлов.
+        tdata_path = TDATA_DIR / acc_id
+        if not tdata_path.exists():
+            return web.json_response({"status": "error", "message": "tdata не найдена в бэкапе"}, status=400)
 
-        # Если нет session файла, пытаемся сделать из tdata
-        if not session_path.exists():
-            tdata_path = TDATA_DIR / acc_id
-            if not tdata_path.exists():
-                 return web.json_response({"status": "error", "message": "Нет ни сессии, ни tdata"}, status=400)
-            try:
-                tdata_acc = read_tdata(str(tdata_path))
-                session_str = tdata_acc.to_string_session()
-                session = StringSession(session_str)
-                client = TelegramClient(session, tdata_acc.api_id, tdata_acc.api_hash)
-                await client.connect()
-                if await client.is_user_authorized():
-                    await client.disconnect()
-                    # Сохраняем как файл
-                    client_file = TelegramClient(str(session_path), tdata_acc.api_id, tdata_acc.api_hash)
-                    await client_file.connect()
-                    await client_file.disconnect()
-                else:
-                    return web.json_response({"status": "error", "message": "tdata не авторизована"}, status=401)
-            except Exception as e:
-                return web.json_response({"status": "error", "message": f"Ошибка tdata: {e}"}, status=500)
+        try:
+            tdata_acc = read_tdata(str(tdata_path))
+            session = StringSession(tdata_acc.to_string_session())
+        except Exception as e:
+            return web.json_response({"status": "error", "message": f"Ошибка чтения tdata: {e}"}, status=500)
 
         parsed_proxy = urlparse(proxy_url)
         proxy_dict = {
@@ -266,9 +244,9 @@ async def handle_buy_premium(request):
         }
         
         client = TelegramClient(
-            str(session_path), 
-            api_id=2040, 
-            api_hash="b18441a1ff607e10a989891a5462e627",
+            session, 
+            tdata_acc.api_id, 
+            tdata_acc.api_hash,
             device_model=device['model'], 
             system_version=device['system'], 
             app_version=device['app'], 
@@ -276,10 +254,11 @@ async def handle_buy_premium(request):
         )
         
         try:
-            await asyncio.wait_for(client.connect(), timeout=20)
+            await asyncio.wait_for(client.connect(), timeout=25)
+            
             if not await client.is_user_authorized():
                 await client.disconnect()
-                return web.json_response({"status": "error", "message": "Аккаунт разлогинен"}, status=401)
+                return web.json_response({"status": "error", "message": "Telegram отклонил ключи (аккаунт мертв или сброшен)"}, status=401)
             
             bot_entity = await client.get_entity("PremiumBot")
             await client.send_message(bot_entity, "/start")
@@ -451,7 +430,6 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
             'rdns': True
         }
 
-        session_path = SESSIONS_DIR / f"{phone}.session"
         tdata_backup_path = TDATA_DIR / phone
 
         if not tdata_backup_path.exists():
@@ -467,11 +445,8 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
                 proxy=proxy_dict
             )
         else:
-            client = TelegramClient(
-                str(session_path), api_id=0, api_hash="", 
-                device_model=device['model'], system_version=device['system'], app_version=device['app'], 
-                proxy=proxy_dict
-            )
+            # Для pyrogram сессий пока заглушка
+            return acc_record
 
         await asyncio.wait_for(client.connect(), timeout=20)
         
