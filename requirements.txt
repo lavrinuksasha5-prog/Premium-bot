@@ -6,3 +6,6 @@ requests
 PySocks
 tdata-reader
 cryptg
+fastapi
+uvicorn
+httpx
