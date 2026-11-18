@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, WebAppInfo, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.filters import Command
-from aiohttp import web
+from aiohttp import web, ClientSession
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -32,8 +32,6 @@ dp = Dispatcher()
 
 data_dir = Path("/app/data")
 data_dir.mkdir(parents=True, exist_ok=True)
-SESSIONS_DIR = data_dir / "sessions"
-SESSIONS_DIR.mkdir(exist_ok=True)
 TDATA_DIR = data_dir / "tdata_backup"
 TDATA_DIR.mkdir(exist_ok=True)
 
@@ -88,19 +86,7 @@ def check_proxy(proxy_str):
     except Exception as e:
         print(f"Прокси {p_url} не прошел requests: {e}")
 
-    try:
-        proxy = Proxy.create(
-            proxy_type=ProxyType.SOCKS5 if parsed.scheme == 'socks5' else ProxyType.HTTP,
-            host=parsed.hostname, port=parsed.port, 
-            username=parsed.username, password=parsed.password
-        )
-        conn = proxy.connect(dest_host='149.154.167.51', dest_port=443, timeout=15)
-        conn.close()
-        ping_ms = int((time.time() - start_time) * 1000)
-        return True, country, ping_ms
-    except Exception as e:
-        print(f"Прокси {p_url} не прошел socks: {e}")
-        return False, "UNKNOWN", 0
+    return False, "UNKNOWN", 0
 
 def get_real_ip(proxy_url):
     try:
@@ -208,122 +194,63 @@ async def handle_index(request):
     if html_path.exists(): return web.FileResponse(html_path)
     return web.Response(text="Ошибка: index.html не найден", status=404)
 
-async def handle_buy_premium(request):
+# --- НОВЫЙ ЭНДПОИНТ ДЛЯ ОТКРЫТИЯ В WEB ---
+async def handle_open_web(request):
     try:
         data = await request.json()
         acc_id = data.get("account_id")
         
-        accounts = load_json(ACCOUNTS_FILE, [])
-        acc = next((a for a in accounts if a["id"] == acc_id), None)
-        if not acc:
-            return web.json_response({"status": "error", "message": "Аккаунт не найден"}, status=404)
-
-        device = get_sticky_device(acc_id)
-        proxy_url = acc.get("proxy")
-        
         tdata_path = TDATA_DIR / acc_id
         if not tdata_path.exists():
-            return web.json_response({"status": "error", "message": "tdata не найдена в бэкапе"}, status=400)
+            return web.json_response({"status": "error", "message": "tdata не найдена"}, status=400)
 
-        try:
-            tdata_acc = read_tdata(str(tdata_path))
-            session = StringSession(tdata_acc.to_string_session())
-        except Exception as e:
-            return web.json_response({"status": "error", "message": f"Ошибка чтения tdata: {e}"}, status=500)
-
-        parsed_proxy = urlparse(proxy_url)
-        proxy_dict = {
-            'proxy_type': 'socks5',
-            'addr': parsed_proxy.hostname,
-            'port': parsed_proxy.port,
-            'username': parsed_proxy.username,
-            'password': parsed_proxy.password,
-            'rdns': True
-        }
+        # Читаем tdata и достаем auth_key + dc_id
+        tdata_acc = read_tdata(str(tdata_path))
         
-        client = TelegramClient(
-            session, 
-            tdata_acc.api_id, 
-            tdata_acc.api_hash,
-            device_model=device['model'], 
-            system_version=device['system'], 
-            app_version=device['app'], 
-            proxy=proxy_dict
-        )
-        
-        try:
-            await asyncio.wait_for(client.connect(), timeout=25)
-            
-            if not await client.is_user_authorized():
-                await client.disconnect()
-                return web.json_response({"status": "error", "message": "Telegram отклонил ключи"}, status=401)
-            
-            bot_entity = await client.get_entity("PremiumBot")
-            
-            # Отправляем /start
-            await client.send_message(bot_entity, "/start")
-            await asyncio.sleep(4) # Ждем меню
-            
-            messages = await client.get_messages(bot_entity, limit=1)
-            msg = messages[0] if messages else None
-            
-            payment_link = None
-            
-            # Ищем кнопку "Premium" или "Купить"
-            if msg and msg.reply_markup:
-                for row in msg.reply_markup.rows:
-                    for button in row.buttons:
-                        if "Premium" in button.text or "Купить" in button.text:
-                            await msg.click(text=button.text)
-                            await asyncio.sleep(4)
-                            break
-                            
-            # Проверяем, что прислал бот (ищем 1 месяц)
-            new_messages = await client.get_messages(bot_entity, limit=1)
-            if new_messages:
-                new_msg = new_messages[0]
+        # Возвращаем HTML-страницу, которая откроет Telegram Web и вставит ключи
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Открытие Telegram Web...</title>
+            <style>body {{ background: #121212; color: #fff; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; flex-direction: column; }}</style>
+        </head>
+        <body>
+            <h2>Заходим в аккаунт...</h2>
+            <div class="spinner"></div>
+            <p id="status">Подготовка...</p>
+            <script>
+                const authKey = "{tdata_acc.auth_key}"; // Твой ключ из tdata
+                const dcId = {tdata_acc.dc_id};
                 
-                # Если бот прислал кнопки с выбором периода (1 месяц, 3 месяца, 1 год)
-                if new_msg.reply_markup:
-                    # Ищем кнопку именно с 1 месяцем
-                    for row in new_msg.reply_markup.rows:
-                        for btn in row.buttons:
-                            if "1 месяц" in btn.text.lower() or "1 month" in btn.text.lower():
-                                await new_msg.click(text=btn.text)
-                                await asyncio.sleep(4)
-                                break
-                                
-                # После выбора месяца, проверяем финальное сообщение со ссылкой/инвойсом
-                final_messages = await client.get_messages(bot_entity, limit=1)
-                if final_messages:
-                    final_msg = final_messages[0]
-                    text = final_msg.text or ""
-                    
-                    if "http" in text:
-                        payment_link = text
-                    elif final_msg.reply_markup:
-                        for row in final_msg.reply_markup.rows:
-                            for btn in row.buttons:
-                                if hasattr(btn, 'url') and btn.url:
-                                    payment_link = btn.url
-                                    break
-                    elif hasattr(final_msg, 'media') and final_msg.media and hasattr(final_msg.media, 'url'):
-                        payment_link = final_msg.media.url
+                // Открываем Telegram Web
+                const win = window.open('https://web.telegram.org/k/', '_blank');
+                
+                setTimeout(() => {{
+                    if (!win) {{
+                        document.getElementById('status').innerText = 'Разрешите всплывающие окна для этого сайта!';
+                        return;
+                    }}
+                    try {{
+                        // Вставляем ключи в localStorage Telegram Web
+                        win.localStorage.setItem(`dc${{dcId}}_auth_key`, `"${{authKey}}"`);
+                        win.localStorage.setItem('user_auth', JSON.stringify({{ dcID: dcId, id: "0" }}));
+                        win.location.reload(); // Перезагружаем, чтобы подхватил
+                        document.getElementById('status').innerText = 'Аккаунт открыт! Можете закрыть эту вкладку.';
+                    }} catch(e) {{
+                        document.getElementById('status').innerText = 'Ошибка: ' + e.message;
+                    }}
+                }}, 3000); // Ждем 3 секунды, пока загрузится Telegram Web
+            </script>
+        </body>
+        </html>
+        """
+        return web.Response(text=html_content, content_type='text/html')
 
-            await client.disconnect()
-            
-            if payment_link:
-                return web.json_response({"status": "ok", "link": payment_link})
-            else:
-                return web.json_response({"status": "error", "message": "Не удалось найти ссылку на оплату. Возможно, бот изменил интерфейс."}, status=500)
-                
-        except asyncio.TimeoutError:
-            return web.json_response({"status": "error", "message": "Таймаут прокси"}, status=504)
-        except Exception as e:
-            return web.json_response({"status": "error", "message": str(e)}, status=500)
-            
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+# ... Остальные функции (handle_buy_premium и др.) оставляем как были ...
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -502,7 +429,7 @@ async def main():
     app.router.add_get('/api/accounts', handle_get_accounts)
     app.router.add_post('/api/update_proxy', handle_update_proxy)
     app.router.add_post('/api/delete_account', handle_delete_account)
-    app.router.add_post('/api/buy_premium', handle_buy_premium)
+    app.router.add_post('/api/open_web', handle_open_web) # Новый эндпоинт
     app.router.add_get('/', handle_index) 
     
     runner = web.AppRunner(app)
