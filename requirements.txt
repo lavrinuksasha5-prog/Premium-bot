@@ -4,5 +4,5 @@ telethon
 python-socks[asyncio]
 requests
 PySocks
-opentele
+opentele-py313
 cryptg
