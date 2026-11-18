@@ -18,10 +18,9 @@ from aiogram.filters import Command
 from aiohttp import web
 
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from telethon.tl.functions.users import GetFullUserRequest
-from opentele.td import TDesktop
-from opentele.api import API, UseCurrentSession
-
+from tdata_reader import read_tdata
 from python_socks import ProxyType
 from python_socks.sync import Proxy
 
@@ -45,6 +44,7 @@ WORK_DIR.mkdir(exist_ok=True)
 TEMP_ZIP = data_dir / "temp.zip"
 
 user_states = {}
+active_clients = {}
 
 def load_json(file_path, default):
     if file_path.exists():
@@ -70,7 +70,6 @@ def format_proxy_url(proxy_str):
 def check_proxy(proxy_str):
     p_url = format_proxy_url(proxy_str)
     parsed = urlparse(p_url)
-    
     proxy_dict = {"http": p_url, "https": p_url}
     country = "UNKNOWN"
     
@@ -79,10 +78,9 @@ def check_proxy(proxy_str):
         if match: country = match.group(1)
 
     start_time = time.time()
-    # 1. Проверка через requests (самая надежная для HTTP/SOCKS5)
     try:
         r = requests.get("http://ip-api.com/json/?fields=status,countryCode,query", 
-                         proxies=proxy_dict, timeout=15)
+                         proxies=proxy_dict, timeout=12)
         if r.status_code == 200 and r.json().get("status") == "success":
             ping_ms = int((time.time() - start_time) * 1000)
             real_country = r.json().get("countryCode")
@@ -91,14 +89,13 @@ def check_proxy(proxy_str):
     except Exception as e:
         print(f"Прокси {p_url} не прошел requests: {e}")
 
-    # 2. Проверка через python-socks (если requests не смог)
     try:
         proxy = Proxy.create(
             proxy_type=ProxyType.SOCKS5 if parsed.scheme == 'socks5' else ProxyType.HTTP,
             host=parsed.hostname, port=parsed.port, 
             username=parsed.username, password=parsed.password
         )
-        conn = proxy.connect(dest_host='149.154.167.51', dest_port=443, timeout=15)
+        conn = proxy.connect(dest_host='149.154.167.51', dest_port=443, timeout=12)
         conn.close()
         ping_ms = int((time.time() - start_time) * 1000)
         return True, country, ping_ms
@@ -176,7 +173,6 @@ async def handle_delete_account(request):
         
         session_path = SESSIONS_DIR / f"{acc_id}.session"
         if session_path.exists(): session_path.unlink()
-        
         tdata_path = TDATA_DIR / acc_id
         if tdata_path.exists(): shutil.rmtree(tdata_path)
         
@@ -229,8 +225,35 @@ async def handle_buy_premium(request):
         proxy_url = acc.get("proxy")
         
         session_path = SESSIONS_DIR / f"{acc_id}.session"
+        
+        # Чистим лок файлы, если есть
+        for suffix in ["-journal", "-wal", "-shm"]:
+            lock_file = Path(str(session_path) + suffix)
+            if lock_file.exists():
+                try: lock_file.unlink()
+                except: pass
+
+        # Если нет session файла, пытаемся сделать из tdata
         if not session_path.exists():
-            return web.json_response({"status": "error", "message": "Нет сессии. Перезагрузите аккаунт."}, status=400)
+            tdata_path = TDATA_DIR / acc_id
+            if not tdata_path.exists():
+                 return web.json_response({"status": "error", "message": "Нет ни сессии, ни tdata"}, status=400)
+            try:
+                tdata_acc = read_tdata(str(tdata_path))
+                session_str = tdata_acc.to_string_session()
+                session = StringSession(session_str)
+                client = TelegramClient(session, tdata_acc.api_id, tdata_acc.api_hash)
+                await client.connect()
+                if await client.is_user_authorized():
+                    await client.disconnect()
+                    # Сохраняем как файл
+                    client_file = TelegramClient(str(session_path), tdata_acc.api_id, tdata_acc.api_hash)
+                    await client_file.connect()
+                    await client_file.disconnect()
+                else:
+                    return web.json_response({"status": "error", "message": "tdata не авторизована"}, status=401)
+            except Exception as e:
+                return web.json_response({"status": "error", "message": f"Ошибка tdata: {e}"}, status=500)
 
         parsed_proxy = urlparse(proxy_url)
         proxy_dict = {
@@ -252,26 +275,21 @@ async def handle_buy_premium(request):
             proxy=proxy_dict
         )
         
-        await asyncio.wait_for(client.connect(), timeout=25)
-        
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            return web.json_response({"status": "error", "message": "Аккаунт разлогинен или забанен"}, status=401)
-        
         try:
+            await asyncio.wait_for(client.connect(), timeout=20)
+            if not await client.is_user_authorized():
+                await client.disconnect()
+                return web.json_response({"status": "error", "message": "Аккаунт разлогинен"}, status=401)
+            
             bot_entity = await client.get_entity("PremiumBot")
             await client.send_message(bot_entity, "/start")
             await asyncio.sleep(3)
             
             messages = await client.get_messages(bot_entity, limit=1)
-            if not messages:
-                await client.disconnect()
-                return web.json_response({"status": "error", "message": "Бот не ответил"}, status=500)
-                
-            msg = messages[0]
+            msg = messages[0] if messages else None
             payment_link = None
             
-            if msg.reply_markup and msg.reply_markup.rows:
+            if msg and msg.reply_markup:
                 for row in msg.reply_markup.rows:
                     for button in row.buttons:
                         if "Premium" in button.text or "Купить" in button.text:
@@ -296,14 +314,13 @@ async def handle_buy_premium(request):
             if payment_link:
                 return web.json_response({"status": "ok", "link": payment_link})
             else:
-                return web.json_response({"status": "error", "message": "Ссылка на оплату не найдена"}, status=500)
+                return web.json_response({"status": "error", "message": "Ссылка не найдена"}, status=500)
                 
+        except asyncio.TimeoutError:
+            return web.json_response({"status": "error", "message": "Таймаут прокси"}, status=504)
         except Exception as e:
-            await client.disconnect()
-            return web.json_response({"status": "error", "message": f"Ошибка в боте: {str(e)}"}, status=500)
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
             
-    except asyncio.TimeoutError:
-        return web.json_response({"status": "error", "message": "Таймаут прокси"}, status=504)
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
@@ -350,8 +367,6 @@ async def process_proxies(message: Message):
         is_alive, country, ping = check_proxy(p)
         if is_alive:
             valid_proxies.append({"raw": format_proxy_url(p), "country": country, "speed": ping})
-        else:
-            print(f"Отброшен прокси: {p}")
 
     if not valid_proxies:
         return await status_msg.edit_text("❌ Все прокси оказались нерабочими.")
@@ -422,7 +437,7 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
         "device_fp": f"{device['platform']}_{device['app']}", 
         "proxy": best_proxy['raw'],
         "ip": get_real_ip(best_proxy['raw']),
-        "status": "❌ Ошибка подключения"
+        "status": "⏳ Ожидает"
     }
 
     try:
@@ -443,17 +458,13 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
             shutil.copytree(path, tdata_backup_path)
 
         if acc_type == "tdata":
-            tdesk = TDesktop(path)
-            if not tdesk.isLoaded():
-                acc_record["status"] = "❌ tdata не загружена"
-                return acc_record
-            
-            client = await tdesk.ToTelethon(
-                session=str(session_path),
-                flag=UseCurrentSession,
-                api=API.TelegramDesktop.Generate(system="windows", unique_id=str(uuid.uuid4())[:8]),
-                proxy=proxy_dict,
-                timeout=25
+            acc = read_tdata(path)
+            session_str = acc.to_string_session()
+            client = TelegramClient(
+                StringSession(session_str), 
+                acc.api_id, acc.api_hash, 
+                device_model=device['model'], system_version=device['system'], app_version=device['app'], 
+                proxy=proxy_dict
             )
         else:
             client = TelegramClient(
@@ -461,8 +472,9 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
                 device_model=device['model'], system_version=device['system'], app_version=device['app'], 
                 proxy=proxy_dict
             )
-            await asyncio.wait_for(client.connect(), timeout=25)
 
+        await asyncio.wait_for(client.connect(), timeout=20)
+        
         if await client.is_user_authorized():
             me = await client.get_me()
             acc_record["username"] = me.username or f"{me.first_name or ''} {me.last_name or ''}".strip() or f"Без имени"
@@ -476,10 +488,10 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
             await client.disconnect()
         else:
             acc_record["status"] = "❌ Не авторизован"
-            
+            await client.disconnect()
+
     except asyncio.TimeoutError:
-        acc_record["status"] = "❌ Таймаут прокси"
-        print(f"Таймаут {phone}")
+        acc_record["status"] = "⚠️ Таймаут прокси"
     except Exception as e:
         acc_record["status"] = f"❌ {str(e)[:30]}"
         print(f"Ошибка {phone}: {e}")
