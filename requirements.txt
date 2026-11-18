@@ -5,5 +5,4 @@ python-socks[asyncio]
 requests
 tdata-reader
 cryptg
-pycountry
 PySocks
