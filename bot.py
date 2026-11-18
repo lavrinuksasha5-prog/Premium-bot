@@ -139,7 +139,7 @@ def generate_unique_device():
 
 def get_sticky_device(acc_id):
     devices = load_json(DEVICES_FILE, {})
-    if acc_id not in devices:
+    if acc_id not in devices or 'platform' not in devices[acc_id]:
         devices[acc_id] = generate_unique_device()
         save_json(DEVICES_FILE, devices)
     return devices[acc_id]
@@ -201,7 +201,6 @@ async def handle_index(request):
     if html_path.exists(): return web.FileResponse(html_path)
     return web.Response(text="Ошибка: index.html не найден", status=404)
 
-# --- ЛОГИКА ПОКУПКИ ПРЕМИУМА ---
 async def handle_buy_premium(request):
     try:
         data = await request.json()
@@ -220,7 +219,14 @@ async def handle_buy_premium(request):
             return web.json_response({"status": "error", "message": "Сессия не найдена. Перезагрузите аккаунт."}, status=400)
 
         parsed_proxy = urlparse(proxy_url)
-        proxy_str = f"socks5://{parsed_proxy.username}:{parsed_proxy.password}@{parsed_proxy.hostname}:{parsed_proxy.port}"
+        proxy_dict = {
+            'proxy_type': 'socks5',
+            'addr': parsed_proxy.hostname,
+            'port': parsed_proxy.port,
+            'username': parsed_proxy.username,
+            'password': parsed_proxy.password,
+            'rdns': True
+        }
         
         client = TelegramClient(
             str(session_path), 
@@ -229,7 +235,7 @@ async def handle_buy_premium(request):
             device_model=device['model'], 
             system_version=device['system'], 
             app_version=device['app'], 
-            proxy=proxy_str
+            proxy=proxy_dict
         )
         
         await client.connect()
@@ -254,7 +260,7 @@ async def handle_buy_premium(request):
             if msg.reply_markup and msg.reply_markup.rows:
                 for row in msg.reply_markup.rows:
                     for button in row.buttons:
-                        if "Premium" in button.text or "Купить" in button.text or "Купить" in button.text:
+                        if "Premium" in button.text or "Купить" in button.text:
                             await msg.click(text=button.text)
                             break
                             
@@ -335,7 +341,6 @@ async def process_proxies(message: Message):
     found_accounts = []
     processed_ids = set()
 
-    # Парсим tdata
     for root, dirs, files in os.walk(WORK_DIR):
         if "key_datas" in files:
             path_parts = root.split(os.sep)
@@ -378,7 +383,9 @@ async def process_proxies(message: Message):
     web_app = WebAppInfo(url="https://worker-production-578b44ee.up.railway.app/")
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 Открыть панель", web_app=web_app)]], resize_keyboard=True)
     
-    await status_msg.edit_text(f"✅ Обработано: {len(found_accounts)}.\nОткрывай панель:", reply_markup=kb)
+    # ФИКС: send_message вместо edit_text для кнопок
+    await status_msg.delete()
+    await message.answer(f"✅ Обработано: {len(found_accounts)}.\nОткрывай панель:", reply_markup=kb)
 
 async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
     device = get_sticky_device(phone)
@@ -403,7 +410,15 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
 
     try:
         parsed_proxy = urlparse(best_proxy['raw'])
-        proxy_str = f"socks5://{parsed_proxy.username}:{parsed_proxy.password}@{parsed_proxy.hostname}:{parsed_proxy.port}"
+        # ФИКС: Прокси теперь словарь, а не строка
+        proxy_dict = {
+            'proxy_type': 'socks5',
+            'addr': parsed_proxy.hostname,
+            'port': parsed_proxy.port,
+            'username': parsed_proxy.username,
+            'password': parsed_proxy.password,
+            'rdns': True
+        }
 
         session_path = SESSIONS_DIR / f"{phone}.session"
         
@@ -413,13 +428,13 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
                 str(session_path), 
                 acc.api_id, acc.api_hash, 
                 device_model=device['model'], system_version=device['system'], app_version=device['app'], 
-                proxy=proxy_str
+                proxy=proxy_dict
             )
         else:
             client = TelegramClient(
                 str(session_path), api_id=0, api_hash="", 
                 device_model=device['model'], system_version=device['system'], app_version=device['app'], 
-                proxy=proxy_str
+                proxy=proxy_dict
             )
 
         await asyncio.wait_for(client.connect(), timeout=15)
@@ -452,7 +467,7 @@ async def main():
     app.router.add_get('/api/accounts', handle_get_accounts)
     app.router.add_post('/api/update_proxy', handle_update_proxy)
     app.router.add_post('/api/delete_account', handle_delete_account)
-    app.router.add_post('/api/buy_premium', handle_buy_premium) # Новый роут
+    app.router.add_post('/api/buy_premium', handle_buy_premium)
     app.router.add_get('/', handle_index) 
     
     runner = web.AppRunner(app)
