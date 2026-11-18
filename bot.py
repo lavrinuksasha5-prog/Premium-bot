@@ -7,6 +7,7 @@ import shutil
 import requests
 import time
 import re
+import uuid
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
@@ -20,6 +21,9 @@ from telethon import TelegramClient
 from telethon.tl.functions.users import GetFullUserRequest
 from opentele.td import TDesktop
 from opentele.api import API, UseCurrentSession
+
+from python_socks import ProxyType
+from python_socks.sync import Proxy
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
@@ -66,40 +70,45 @@ def format_proxy_url(proxy_str):
 def check_proxy(proxy_str):
     p_url = format_proxy_url(proxy_str)
     parsed = urlparse(p_url)
-    host, port = parsed.hostname, parsed.port
-    login, password = parsed.username, parsed.password
     
+    proxy_dict = {"http": p_url, "https": p_url}
     country = "UNKNOWN"
-    if login:
-        match = re.search(r'country-([A-Z]{2})', login)
+    
+    if parsed.username:
+        match = re.search(r'country-([A-Z]{2})', parsed.username)
         if match: country = match.group(1)
 
     start_time = time.time()
+    # 1. Проверка через requests (самая надежная для HTTP/SOCKS5)
+    try:
+        r = requests.get("http://ip-api.com/json/?fields=status,countryCode,query", 
+                         proxies=proxy_dict, timeout=15)
+        if r.status_code == 200 and r.json().get("status") == "success":
+            ping_ms = int((time.time() - start_time) * 1000)
+            real_country = r.json().get("countryCode")
+            if real_country: country = real_country
+            return True, country, ping_ms
+    except Exception as e:
+        print(f"Прокси {p_url} не прошел requests: {e}")
+
+    # 2. Проверка через python-socks (если requests не смог)
     try:
         proxy = Proxy.create(
             proxy_type=ProxyType.SOCKS5 if parsed.scheme == 'socks5' else ProxyType.HTTP,
-            host=host, port=port, username=login, password=password
+            host=parsed.hostname, port=parsed.port, 
+            username=parsed.username, password=parsed.password
         )
-        conn = proxy.connect(dest_host='149.154.167.51', dest_port=443, timeout=5)
+        conn = proxy.connect(dest_host='149.154.167.51', dest_port=443, timeout=15)
         conn.close()
         ping_ms = int((time.time() - start_time) * 1000)
-        
-        if country == "UNKNOWN":
-            try:
-                r = requests.get("http://ip-api.com/json/?fields=status,countryCode", 
-                                 proxies={'http': p_url, 'https': p_url}, timeout=3)
-                if r.status_code == 200 and r.json().get("status") == "success":
-                    country = r.json().get("countryCode")
-            except: pass
-            
         return True, country, ping_ms
     except Exception as e:
-        print(f"Прокси {p_url} не работает: {e}")
+        print(f"Прокси {p_url} не прошел socks: {e}")
         return False, "UNKNOWN", 0
 
 def get_real_ip(proxy_url):
     try:
-        r = requests.get("http://ip-api.com/json/?fields=query", proxies={'http': proxy_url, 'https': proxy_url}, timeout=5)
+        r = requests.get("http://ip-api.com/json/?fields=query", proxies={'http': proxy_url, 'https': proxy_url}, timeout=10)
         if r.status_code == 200: return r.json().get("query", "0.0.0.0")
     except: pass
     return "0.0.0.0"
@@ -243,7 +252,6 @@ async def handle_buy_premium(request):
             proxy=proxy_dict
         )
         
-        # Даем 25 секунд на подключение, так как прокси может тупить
         await asyncio.wait_for(client.connect(), timeout=25)
         
         if not await client.is_user_authorized():
@@ -251,7 +259,6 @@ async def handle_buy_premium(request):
             return web.json_response({"status": "error", "message": "Аккаунт разлогинен или забанен"}, status=401)
         
         try:
-            # Ищем @PremiumBot
             bot_entity = await client.get_entity("PremiumBot")
             await client.send_message(bot_entity, "/start")
             await asyncio.sleep(3)
@@ -289,7 +296,7 @@ async def handle_buy_premium(request):
             if payment_link:
                 return web.json_response({"status": "ok", "link": payment_link})
             else:
-                return web.json_response({"status": "error", "message": "Ссылка на оплату не найдена (возможно, уже есть премиум)"}, status=500)
+                return web.json_response({"status": "error", "message": "Ссылка на оплату не найдена"}, status=500)
                 
         except Exception as e:
             await client.disconnect()
@@ -343,6 +350,8 @@ async def process_proxies(message: Message):
         is_alive, country, ping = check_proxy(p)
         if is_alive:
             valid_proxies.append({"raw": format_proxy_url(p), "country": country, "speed": ping})
+        else:
+            print(f"Отброшен прокси: {p}")
 
     if not valid_proxies:
         return await status_msg.edit_text("❌ Все прокси оказались нерабочими.")
@@ -378,7 +387,6 @@ async def process_proxies(message: Message):
             matching = [p for p in valid_proxies if p["country"] == acc_country]
             if matching: best_proxy = matching[0]
 
-            # Конвертация tdata и парсинг
             acc_data = await parse_account_data(root, "tdata", phone, acc_country, best_proxy)
             if acc_data:
                 found_accounts.append(acc_data)
@@ -431,18 +439,15 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
         session_path = SESSIONS_DIR / f"{phone}.session"
         tdata_backup_path = TDATA_DIR / phone
 
-        # Делаем бэкап tdata, чтобы всегда можно было пересоздать
         if not tdata_backup_path.exists():
             shutil.copytree(path, tdata_backup_path)
 
         if acc_type == "tdata":
-            # ИСПОЛЬЗУЕМ OPENTELE ДЛЯ КОНВЕРТАЦИИ
             tdesk = TDesktop(path)
             if not tdesk.isLoaded():
                 acc_record["status"] = "❌ tdata не загружена"
                 return acc_record
             
-            # Конвертируем в Telethon Session
             client = await tdesk.ToTelethon(
                 session=str(session_path),
                 flag=UseCurrentSession,
@@ -458,7 +463,6 @@ async def parse_account_data(path, acc_type, phone, acc_country, best_proxy):
             )
             await asyncio.wait_for(client.connect(), timeout=25)
 
-        # Если подключились
         if await client.is_user_authorized():
             me = await client.get_me()
             acc_record["username"] = me.username or f"{me.first_name or ''} {me.last_name or ''}".strip() or f"Без имени"
