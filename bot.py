@@ -256,42 +256,66 @@ async def handle_buy_premium(request):
             
             if not await client.is_user_authorized():
                 await client.disconnect()
-                return web.json_response({"status": "error", "message": "Telegram отклонил ключи (аккаунт мертв или сброшен)"}, status=401)
+                return web.json_response({"status": "error", "message": "Telegram отклонил ключи"}, status=401)
             
             bot_entity = await client.get_entity("PremiumBot")
+            
+            # Отправляем /start
             await client.send_message(bot_entity, "/start")
-            await asyncio.sleep(3)
+            await asyncio.sleep(4) # Ждем меню
             
             messages = await client.get_messages(bot_entity, limit=1)
             msg = messages[0] if messages else None
+            
             payment_link = None
             
+            # Ищем кнопку "Premium" или "Купить"
             if msg and msg.reply_markup:
                 for row in msg.reply_markup.rows:
                     for button in row.buttons:
                         if "Premium" in button.text or "Купить" in button.text:
                             await msg.click(text=button.text)
-                            await asyncio.sleep(3)
+                            await asyncio.sleep(4)
                             break
                             
+            # Проверяем, что прислал бот (ищем 1 месяц)
             new_messages = await client.get_messages(bot_entity, limit=1)
             if new_messages:
-                text = new_messages[0].text or ""
-                if "http" in text:
-                    payment_link = text
-                elif new_messages[0].reply_markup:
-                    for row in new_messages[0].reply_markup.rows:
+                new_msg = new_messages[0]
+                
+                # Если бот прислал кнопки с выбором периода (1 месяц, 3 месяца, 1 год)
+                if new_msg.reply_markup:
+                    # Ищем кнопку именно с 1 месяцем
+                    for row in new_msg.reply_markup.rows:
                         for btn in row.buttons:
-                            if hasattr(btn, 'url') and btn.url:
-                                payment_link = btn.url
+                            if "1 месяц" in btn.text.lower() or "1 month" in btn.text.lower():
+                                await new_msg.click(text=btn.text)
+                                await asyncio.sleep(4)
                                 break
-            
+                                
+                # После выбора месяца, проверяем финальное сообщение со ссылкой/инвойсом
+                final_messages = await client.get_messages(bot_entity, limit=1)
+                if final_messages:
+                    final_msg = final_messages[0]
+                    text = final_msg.text or ""
+                    
+                    if "http" in text:
+                        payment_link = text
+                    elif final_msg.reply_markup:
+                        for row in final_msg.reply_markup.rows:
+                            for btn in row.buttons:
+                                if hasattr(btn, 'url') and btn.url:
+                                    payment_link = btn.url
+                                    break
+                    elif hasattr(final_msg, 'media') and final_msg.media and hasattr(final_msg.media, 'url'):
+                        payment_link = final_msg.media.url
+
             await client.disconnect()
             
             if payment_link:
                 return web.json_response({"status": "ok", "link": payment_link})
             else:
-                return web.json_response({"status": "error", "message": "Ссылка не найдена"}, status=500)
+                return web.json_response({"status": "error", "message": "Не удалось найти ссылку на оплату. Возможно, бот изменил интерфейс."}, status=500)
                 
         except asyncio.TimeoutError:
             return web.json_response({"status": "error", "message": "Таймаут прокси"}, status=504)
