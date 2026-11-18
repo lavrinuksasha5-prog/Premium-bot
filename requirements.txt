@@ -4,5 +4,5 @@ telethon
 python-socks[asyncio]
 requests
 PySocks
-opentele-py313
+tdata-reader
 cryptg
